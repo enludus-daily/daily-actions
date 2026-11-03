@@ -29,4 +29,11 @@ check home home-path "path /Us""ers/taro/x"
 check assign generic-secret-assignment 'api_key = "abcdefgh''ijklmnop1234"'
 check author commit-author-email "hello" "me@""gmail.com"
 check p8 forbidden-file "hello" noreply@anthropic.com AuthKey_ABC.p8
+
+# 本人のアドレスは、コミットの作者としては通り、ファイルの中身では検出される
+owner="ibuki.n5@""icloud.com"
+mkdir "$work/owner" && cd "$work/owner" && git init -q && echo hello > f.txt && git add . && commit "$owner"
+bash "$scan" . >/dev/null || { echo "FAIL: owner as commit author was rejected"; exit 1; }
+echo "ok: owner-author-allowed"
+check owner-in-content email "contact: $owner"
 echo "all scan tests passed"

@@ -78,8 +78,10 @@ for rule in "${pii_rules[@]}"; do
 done
 
 # 4. コミットの作者・コミッターのメールアドレス
+#    本人のアドレスは、コミットの作者としてだけ許す（本人の判断 2026-11-03。テンプレートからの生成で作者が本人になるため）。
+#    ファイルの中身に書かれた場合は 3. で検出する。
 echo "== 4. コミットのメールアドレス"
-commit_email_allow='^(noreply@anthropic\.com|noreply@github\.com|[0-9]+\+[A-Za-z0-9-]+(\[bot\])?@users\.noreply\.github\.com|[A-Za-z0-9-]+@users\.noreply\.github\.com)$'
+commit_email_allow='^(noreply@anthropic\.com|noreply@github\.com|ibuki\.n5@icloud\.com|[0-9]+\+[A-Za-z0-9-]+(\[bot\])?@users\.noreply\.github\.com|[A-Za-z0-9-]+@users\.noreply\.github\.com)$'
 if [ -n "$range" ]; then log_args=("$range"); else log_args=(--all); fi
 while IFS='|' read -r sha ae ce; do
   printf '%s' "$ae" | grep -qiE "$commit_email_allow" || report commit-author-email "${sha:0:12}"
