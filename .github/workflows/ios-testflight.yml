@@ -159,7 +159,8 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
-          ipa=$(ls "$RUNNER_TEMP/export"/*.ipa | head -1)
+          ipa=$(find "$RUNNER_TEMP/export" -maxdepth 1 -name "*.ipa" -print -quit)
+          [ -n "$ipa" ] || { echo "::error::ipa がありません"; exit 1; }
           xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
       - name: Summary
