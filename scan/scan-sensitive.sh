@@ -23,7 +23,7 @@ while IFS= read -r f; do
     *.p8|*.p12|*.pfx|*.pem|*.key|*.cer|*.der|*.mobileprovision|*.provisionprofile|*.keychain|*.keychain-db|*.jks|*.keystore)
       report forbidden-file "$f" ;;
     .env|.env.*|*/.env|*/.env.*)
-      case "$f" in *.env.example|*/.env.example|.env.example) ;; *) report forbidden-file "$f" ;; esac ;;
+      case "$f" in *.env.example) ;; *) report forbidden-file "$f" ;; esac ;;
   esac
 done < <(git ls-files)
 
