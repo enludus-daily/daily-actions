@@ -1,0 +1,36 @@
+# daily-actions 自身の CI（Linux だけ。無料）
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  lint-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: actionlint (pinned + checksum)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          # https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/al.tgz" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/al.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - name: shellcheck
+        run: shellcheck scan/scan-sensitive.sh guard/guard.sh tests/*.sh
+      - name: tests
+        run: |
+          bash tests/scan-test.sh
+          bash tests/guard-test.sh
+      - name: scan this repository
+        uses: ./scan

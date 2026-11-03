@@ -1,0 +1,28 @@
+name: Daily guard
+description: 日本時間の1日あたりの実行上限と、連続失敗での停止。呼び出し元のワークフロー単位で数える。
+inputs:
+  max-per-day:
+    description: 1日（JST）あたりの上限
+    required: true
+  max-consecutive-failures:
+    description: この回数続けて失敗していたら止める
+    default: "3"
+  token:
+    description: actions:read を持つトークン
+    default: ${{ github.token }}
+  disabled:
+    description: 本人がリポジトリの Variables（DAILY_GUARD_DISABLED）で止めたいときだけ "true"
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        RUN_ID: ${{ github.run_id }}
+        MAX_PER_DAY: ${{ inputs.max-per-day }}
+        MAX_CONSECUTIVE_FAILURES: ${{ inputs.max-consecutive-failures }}
+        GUARD_DISABLED: ${{ inputs.disabled }}
+      run: bash "$GITHUB_ACTION_PATH/guard.sh"

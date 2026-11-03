@@ -1,0 +1,47 @@
+name: Scan sensitive data
+description: 秘密情報・個人情報の検査（scan-sensitive.sh + gitleaks）。Linux x64 / macOS arm64 ランナーで動く。
+inputs:
+  path:
+    description: 検査するリポジトリのディレクトリ
+    default: .
+  range:
+    description: コミット範囲（空なら全履歴）
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install gitleaks (pinned + checksum)
+      shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+        SHA_LINUX_X64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        SHA_DARWIN_ARM64: b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)   asset=linux_x64;    sha="$SHA_LINUX_X64" ;;
+          macOS-ARM64) asset=darwin_arm64; sha="$SHA_DARWIN_ARM64" ;;
+          *) echo "unsupported runner: ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/gitleaks"; mkdir -p "$dir"
+        curl -fsSL -o "$dir/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${asset}.tar.gz"
+        echo "${sha}  $dir/gl.tgz" | shasum -a 256 -c -
+        tar -xzf "$dir/gl.tgz" -C "$dir" gitleaks
+        echo "$dir" >> "$GITHUB_PATH"
+    - name: Scan
+      shell: bash
+      env:
+        SCAN_REQUIRE_GITLEAKS: "1"
+        SCAN_PATH: ${{ inputs.path }}
+        SCAN_RANGE: ${{ inputs.range }}
+      run: bash "$GITHUB_ACTION_PATH/scan-sensitive.sh" "$SCAN_PATH" "$SCAN_RANGE"
+    - name: Compare local copy (warning only)
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+      run: |
+        local_copy="$SCAN_PATH/scripts/scan-sensitive.sh"
+        if [ -f "$local_copy" ] && ! cmp -s "$local_copy" "$GITHUB_ACTION_PATH/scan-sensitive.sh"; then
+          echo "::warning::scripts/scan-sensitive.sh が daily-actions の正本と違います。push 前の検査が古い可能性があります。"
+        fi
