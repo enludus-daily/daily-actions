@@ -138,14 +138,24 @@ jobs:
           xcrun simctl launch "$udid" "$bundle_id"
           sleep 8
           mkdir -p "$RUNNER_TEMP/screenshots"
-          xcrun simctl io "$udid" screenshot "$RUNNER_TEMP/screenshots/01-launch.png"
+          # iPhone Duo のように画面が複数ある端末では、--display を付けないと撮れない。
+          # その場合は、エラーに並ぶ画面（例: "--display=3  LCD-1 (primary-1) 2007x2853"）を全部撮る。
+          out="$RUNNER_TEMP/screenshots"
+          if ! err=$(xcrun simctl io "$udid" screenshot "$out/01-launch.png" 2>&1); then
+            displays=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*[[:space:]]([0-9]+x[0-9]+)$/\1 \2/p')
+            if [ -z "$displays" ]; then printf '%s\n' "$err"; exit 1; fi
+            while read -r id size; do
+              xcrun simctl io "$udid" screenshot --display="$id" "$out/01-launch-display${id}-${size}.png"
+            done <<< "$displays"
+          fi
+          ls -l "$out"
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v5
         with:
           name: screenshots
           path: ${{ runner.temp }}/screenshots
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 14
       - name: Upload test results on failure
         if: failure()
