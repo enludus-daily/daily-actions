@@ -1,0 +1,176 @@
+# 再利用ワークフロー: 検査 → アーカイブ（クラウド署名）→ ipa 書き出し → TestFlight へアップロード。
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-testflight.yml@v1
+#
+# 署名: App Store Connect API のチームキーで xcodebuild -allowProvisioningUpdates を使う（クラウド管理の配布証明書）。
+#   App Manager のキーでこれが通るかは、Apple の公開文書では確定できなかった（docs/signing.md）。
+#   最初の実行で失敗したら、証明書とプロファイルを組織の Secrets に入れる手動署名に切り替える案を本人に出す。
+# アップロード: xcrun altool --upload-app（App Store Connect ヘルプ「Upload builds」に載っている方法）。
+# 秘密: pull_request からは呼ばないこと（呼び出し元は workflow_dispatch だけにする）。
+name: iOS TestFlight (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      scheme:
+        type: string
+        required: true
+      team-id:
+        description: Apple の Team ID（呼び出し元で vars.APPLE_TEAM_ID を渡す）
+        type: string
+        required: true
+      xcode-version:
+        type: string
+        default: "26.6"
+      runs-on:
+        type: string
+        default: macos-26
+      max-uploads-per-day:
+        type: number
+        default: 3
+      max-consecutive-failures:
+        type: number
+        default: 2
+      guard-disabled:
+        type: string
+        default: "false"
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_P8:
+        description: AuthKey_<KEY_ID>.p8 の中身（PEM の文字列）
+        required: true
+    outputs:
+      build-number:
+        value: ${{ jobs.upload.outputs.build-number }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse untrusted events
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::TestFlight は workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
+          if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
+      - uses: enludus-daily/daily-actions/guard@v1
+        with:
+          max-per-day: ${{ inputs.max-uploads-per-day }}
+          max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
+          disabled: ${{ inputs.guard-disabled }}
+
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: enludus-daily/daily-actions/scan@v1
+
+  upload:
+    needs: [guard, scan]
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 60
+    outputs:
+      build-number: ${{ steps.version.outputs.build-number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: enludus-daily/daily-actions/setup-ios@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+      - name: Write API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_P8: ${{ secrets.ASC_P8 }}
+        run: |
+          set -euo pipefail
+          # altool は API_PRIVATE_KEYS_DIR の AuthKey_<KEY_ID>.p8 を読む
+          keydir="$RUNNER_TEMP/private_keys"; mkdir -p "$keydir"; chmod 700 "$keydir"
+          ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
+          echo "API_PRIVATE_KEYS_DIR=$keydir" >> "$GITHUB_ENV"
+          echo "ASC_KEY_PATH=$keydir/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_ENV"
+      - name: Build number
+        id: version
+        # 同じ枠（Bundle ID）でも必ず増える値にする。UTC の年月日時分。
+        run: echo "build-number=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+      - name: Archive (cloud signing)
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          TEAM_ID: ${{ inputs.team-id }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build-number }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          if [ -z "$TEAM_ID" ]; then echo "::error::team-id が空です（組織の Variables に APPLE_TEAM_ID を設定）"; exit 1; fi
+          xcodebuild archive \
+            -scheme "$SCHEME" \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            | xcbeautify --renderer github-actions
+      - name: Export ipa
+        env:
+          TEAM_ID: ${{ inputs.team-id }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          plist="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" \
+            -c "Add :destination string export" \
+            -c "Add :signingStyle string automatic" \
+            -c "Add :teamID string $TEAM_ID" \
+            -c "Add :uploadSymbols bool true" \
+            -c "Add :manageAppVersionAndBuildNumber bool false" "$plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            | xcbeautify --renderer github-actions
+          ls "$RUNNER_TEMP/export"/*.ipa
+      - name: Upload to App Store Connect (TestFlight)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          ipa=$(ls "$RUNNER_TEMP/export"/*.ipa | head -1)
+          xcrun altool --upload-app --type ios --file "$ipa" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - name: Summary
+        env:
+          BUILD_NUMBER: ${{ steps.version.outputs.build-number }}
+        run: |
+          {
+            echo "### TestFlight へアップロードしました"
+            echo "- ビルド番号: \`$BUILD_NUMBER\`"
+            echo "- App Store Connect での処理（数分〜数十分）はこのワークフローでは待っていません"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"

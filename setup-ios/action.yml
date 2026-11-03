@@ -1,0 +1,42 @@
+name: Setup iOS project
+description: Xcode を版で選び、XcodeGen（版とハッシュで固定）で project.yml から .xcodeproj を作る。
+inputs:
+  xcode-version:
+    description: /Applications/Xcode_<version>.app の <version>
+    required: true
+  project-spec:
+    description: XcodeGen の spec
+    default: project.yml
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: |
+        set -euo pipefail
+        app="/Applications/Xcode_${XCODE_VERSION}.app"
+        if [ ! -d "$app" ]; then
+          echo "::error::$app がありません。ランナーにある版:"; ls -d /Applications/Xcode_*.app; exit 1
+        fi
+        sudo xcode-select -s "$app/Contents/Developer"
+        xcodebuild -version
+    - name: Install XcodeGen (pinned + checksum)
+      shell: bash
+      env:
+        XCODEGEN_VERSION: 2.46.0
+        # 公式のチェックサム配布がないため、2026-11-03 にリリースの xcodegen.zip を取得して計算した値で固定する
+        XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/xcodegen-dl"; mkdir -p "$dir"
+        curl -fsSL -o "$dir/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+        echo "${XCODEGEN_SHA256}  $dir/xcodegen.zip" | shasum -a 256 -c -
+        unzip -q "$dir/xcodegen.zip" -d "$dir"
+        echo "$dir/xcodegen/bin" >> "$GITHUB_PATH"
+    - name: Generate project
+      shell: bash
+      env:
+        SPEC: ${{ inputs.project-spec }}
+      run: xcodegen generate --spec "$SPEC"

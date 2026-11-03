@@ -1,0 +1,122 @@
+# 再利用ワークフロー: 検査 → ビルド → テスト → スクリーンショット。署名はしない。
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-ci.yml@v1
+name: iOS CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      scheme:
+        description: ビルド・テストするスキーム
+        type: string
+        required: true
+      xcode-version:
+        description: Xcode の版（ランナーの /Applications/Xcode_<version>.app）
+        type: string
+        default: "26.6"
+      runs-on:
+        description: macOS ランナー（標準ランナーだけが public リポジトリで無料。-large / -xlarge は有料）
+        type: string
+        default: macos-26
+      test-destination:
+        type: string
+        default: "platform=iOS Simulator,name=iPhone 17,OS=latest"
+      screenshot-device:
+        description: スクリーンショットを撮るシミュレータ（6.9 インチ = App Store の必須サイズ）
+        type: string
+        default: iPhone 17 Pro Max
+      max-runs-per-day:
+        type: number
+        default: 12
+      max-consecutive-failures:
+        type: number
+        default: 3
+      guard-disabled:
+        description: 呼び出し元で vars.DAILY_GUARD_DISABLED を渡す（本人だけが設定する）
+        type: string
+        default: "false"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: enludus-daily/daily-actions/guard@v1
+        with:
+          max-per-day: ${{ inputs.max-runs-per-day }}
+          max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
+          disabled: ${{ inputs.guard-disabled }}
+
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: enludus-daily/daily-actions/scan@v1
+
+  build-test:
+    needs: [guard, scan]
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: enludus-daily/daily-actions/setup-ios@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+      - name: Build and test
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          DESTINATION: ${{ inputs.test-destination }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
+      - name: Screenshot (best effort)
+        continue-on-error: true
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          DEVICE: ${{ inputs.screenshot-device }}
+        run: |
+          set -euo pipefail
+          xcodebuild build -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=$DEVICE,OS=latest" \
+            -derivedDataPath "$RUNNER_TEMP/dd-shot" CODE_SIGNING_ALLOWED=NO -quiet
+          app=$(find "$RUNNER_TEMP/dd-shot/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' | head -1)
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          udid=$(xcrun simctl list devices available -j | jq -r --arg n "$DEVICE" '[.devices[][] | select(.name == $n)][-1].udid')
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
+          xcrun simctl install "$udid" "$app"
+          xcrun simctl launch "$udid" "$bundle_id"
+          sleep 8
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          xcrun simctl io "$udid" screenshot "$RUNNER_TEMP/screenshots/01-launch.png"
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: TestResults.xcresult
+          path: ${{ runner.temp }}/TestResults.xcresult
+          retention-days: 7
