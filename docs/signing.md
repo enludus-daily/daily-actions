@@ -1,5 +1,7 @@
 # 署名の方針（2026-11-03）
 
+> **結果と決定（2026-11-03）**：App Manager のチームキーでは、アーカイブは通ったが、配布用の書き出しで `Cloud signing permission error` と `No profiles for 'com.enludus.daily.001' were found` になった（app-20261103-pipeline-check の TestFlight 実行 41587186017）。本人の判断で **Admin のチームキーに替える**（案2）。理由：本人の他のリポジトリでも Admin のキーを Secrets に入れて運用しており、証明書とプロファイルの管理を増やさないため。
+
 ## 今の方式：クラウド署名（自動）
 
 `xcodebuild archive / -exportArchive` に `-allowProvisioningUpdates` と API キー（`-authenticationKeyPath/ID/IssuerID`）を渡し、配布証明書（クラウド管理）とプロファイルを Xcode に用意させる。証明書もプロファイルもリポジトリや Secrets に置かずに済む。
