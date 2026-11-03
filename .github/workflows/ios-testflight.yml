@@ -1,5 +1,6 @@
 # 再利用ワークフロー: 検査 → アーカイブ（クラウド署名）→ ipa 書き出し → TestFlight へアップロード。
-# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-testflight.yml@v1
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-testflight.yml@<40桁の SHA>
+#   with: actions-sha: <同じ SHA>（中の部品 guard / scan / setup-ios もこの版で使うため）
 #
 # 署名: App Store Connect API のチームキーで xcodebuild -allowProvisioningUpdates を使う（クラウド管理の配布証明書）。
 #   App Manager のキーでこれが通るかは、Apple の公開文書では確定できなかった（docs/signing.md）。
@@ -11,6 +12,10 @@ name: iOS TestFlight (reusable)
 on:
   workflow_call:
     inputs:
+      actions-sha:
+        description: 呼び出しの @ に書いたのと同じ daily-actions の 40 桁の SHA（部品をこの版で使う）
+        type: string
+        required: true
       scheme:
         type: string
         required: true
@@ -62,13 +67,28 @@ jobs:
         run: |
           if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::TestFlight は workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
           if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
-      - uses: enludus-daily/daily-actions/guard@v1
+      - name: Validate actions-sha
+        env:
+          ACTIONS_SHA: ${{ inputs.actions-sha }}
+        run: |
+          if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::actions-sha は 40 桁のコミット SHA にしてください（呼び出しの @ と同じ値）"; exit 1
+          fi
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/guard
         with:
           max-per-day: ${{ inputs.max-uploads-per-day }}
           max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
           disabled: ${{ inputs.guard-disabled }}
 
   scan:
+    needs: [guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -76,7 +96,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: enludus-daily/daily-actions/scan@v1
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/scan
 
   upload:
     needs: [guard, scan]
@@ -88,7 +115,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: enludus-daily/daily-actions/setup-ios@v1
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/setup-ios
         with:
           xcode-version: ${{ inputs.xcode-version }}
       - name: Write API key

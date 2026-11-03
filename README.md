@@ -1,6 +1,6 @@
 # daily-actions
 
-enludus-daily の iOS アプリ用の再利用ワークフローと composite action。各アプリは `@v1` で呼ぶ。
+enludus-daily の iOS アプリ用の再利用ワークフローと composite action。各アプリは **コミットの SHA（40 桁）で固定して** 呼ぶ（タグは使わない）。
 
 | 名前 | 種類 | すること |
 |---|---|---|
@@ -16,11 +16,14 @@ enludus-daily の iOS アプリ用の再利用ワークフローと composite ac
 # .github/workflows/ci.yml（アプリ側）
 jobs:
   ci:
-    uses: enludus-daily/daily-actions/.github/workflows/ios-ci.yml@v1
+    uses: enludus-daily/daily-actions/.github/workflows/ios-ci.yml@<40桁の SHA> # daily-actions YYYY-MM-DD
     with:
+      actions-sha: <同じ SHA>   # 中の部品（guard / scan / setup-ios）もこの版で使う
       scheme: MyApp
       guard-disabled: ${{ vars.DAILY_GUARD_DISABLED == 'true' && 'true' || 'false' }}
 ```
+
+`@` と `actions-sha` には同じ SHA を書く（コミットは自分自身の SHA を中に書けないため、部品の版は呼び出し側から渡す）。テンプレートでは `scripts/pin-daily-actions.sh <SHA>` が両方を書き換える。
 
 TestFlight は `workflow_dispatch` からだけ、既定ブランチでだけ動く（pull_request から秘密に届かないようにするため）。秘密は `secrets: inherit` ではなく、使う3つだけを渡す。
 
@@ -38,13 +41,16 @@ TestFlight は `workflow_dispatch` からだけ、既定ブランチでだけ動
 | CI | 12 回 | 3 回 |
 | TestFlight | 3 回 | 2 回 |
 
-止まったら本人が原因を見て直す。どうしても上限を外すときは、そのアプリのリポジトリの Variables に `DAILY_GUARD_DISABLED=true` を本人が設定する（自動のセッションは変えない）。
+止まったら本人が原因を見て直す（毎日のセッションは止まって `needs-human` を付ける）。どうしても上限を外すときは、そのアプリのリポジトリの Variables に `DAILY_GUARD_DISABLED=true` を本人が設定する（自動のセッションは変えない）。
 
-## 版の付け方
+## 版の付け方（SHA 固定）
 
-- 変更は PR → main。リリースは `v1.x.y` のタグを付け、`v1` を動かす（`git tag -f v1 && git push -f origin v1`）。
-- 互換を壊す変更（入力の削除・名前の変更、上限の考え方の変更）は `v2` にする。
-- composite action は `@v1` で自分自身を参照している。`v1` を動かすまで、main の変更はアプリ側に届かない。
+1. daily-actions を直して main に push する（PR でもよい）。
+2. 自己 CI（`.github/workflows/ci.yml`）がそのコミットで通ったことを確かめる。
+3. daily-app-template で `scripts/pin-daily-actions.sh <SHA>` を実行して push する（スクリプトは、その SHA で自己 CI が成功していることを確かめてから書き換える）。
+4. すでに作ったアプリのリポジトリは、作った時点の SHA のまま（遡って更新しない）。
+
+**daily-actions を直すのは、本人が始める整備用のセッションだけ。** 毎日の予約実行のセッションには daily-actions を付けない（CI・上限のガード・検査を、毎日の AI が緩められないようにするため）。
 
 ## 署名について
 

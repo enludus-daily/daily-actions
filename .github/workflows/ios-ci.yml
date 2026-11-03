@@ -1,10 +1,15 @@
 # 再利用ワークフロー: 検査 → ビルド → テスト → スクリーンショット。署名はしない。
-# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-ci.yml@v1
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-ci.yml@<40桁の SHA>
+#   with: actions-sha: <同じ SHA>（中の部品 guard / scan / setup-ios もこの版で使うため）
 name: iOS CI (reusable)
 
 on:
   workflow_call:
     inputs:
+      actions-sha:
+        description: 呼び出しの @ に書いたのと同じ daily-actions の 40 桁の SHA（部品をこの版で使う）
+        type: string
+        required: true
       scheme:
         description: ビルド・テストするスキーム
         type: string
@@ -44,13 +49,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: enludus-daily/daily-actions/guard@v1
+      - name: Validate actions-sha
+        env:
+          ACTIONS_SHA: ${{ inputs.actions-sha }}
+        run: |
+          if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::actions-sha は 40 桁のコミット SHA にしてください（呼び出しの @ と同じ値）"; exit 1
+          fi
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/guard
         with:
           max-per-day: ${{ inputs.max-runs-per-day }}
           max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
           disabled: ${{ inputs.guard-disabled }}
 
   scan:
+    needs: [guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -58,7 +78,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: enludus-daily/daily-actions/scan@v1
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/scan
 
   build-test:
     needs: [guard, scan]
@@ -68,7 +95,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: enludus-daily/daily-actions/setup-ios@v1
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/setup-ios
         with:
           xcode-version: ${{ inputs.xcode-version }}
       - name: Build and test
