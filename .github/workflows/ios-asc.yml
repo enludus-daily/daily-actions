@@ -31,7 +31,7 @@ on:
         default: daily-internal
       max-per-day:
         type: number
-        default: 6
+        default: 20
       max-consecutive-failures:
         type: number
         default: 3

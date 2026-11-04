@@ -33,7 +33,7 @@ on:
         default: macos-26
       max-uploads-per-day:
         type: number
-        default: 3
+        default: 10
       max-consecutive-failures:
         type: number
         default: 2

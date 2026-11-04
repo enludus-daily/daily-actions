@@ -29,9 +29,15 @@ on:
         description: スクリーンショットを撮るシミュレータ（6.9 インチ = App Store の必須サイズ）
         type: string
         default: iPhone 17 Pro Max
+      screenshot-scenes:
+        description: |
+          撮る画面（空白区切り）。各画面は起動引数 -screenshotScene <名前> でアプリに渡す（アプリが UserDefaults の
+          screenshotScene を読んでその画面を開く）。名前に @dark を付けるとダークモードで撮る。launch は引数なしの起動。
+        type: string
+        default: launch
       max-runs-per-day:
         type: number
-        default: 12
+        default: 40
       max-consecutive-failures:
         type: number
         default: 3
@@ -123,6 +129,7 @@ jobs:
         env:
           SCHEME: ${{ inputs.scheme }}
           DEVICE: ${{ inputs.screenshot-device }}
+          SCENES: ${{ inputs.screenshot-scenes }}
         run: |
           set -euo pipefail
           xcodebuild build -scheme "$SCHEME" \
@@ -135,19 +142,35 @@ jobs:
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$udid" "$app"
-          xcrun simctl launch "$udid" "$bundle_id"
-          sleep 8
-          mkdir -p "$RUNNER_TEMP/screenshots"
+          out="$RUNNER_TEMP/screenshots"
+          mkdir -p "$out"
           # iPhone Duo のように画面が複数ある端末では、--display を付けないと撮れない。
           # その場合は、エラーに並ぶ画面（例: "--display=3  LCD-1 (primary-1) 2007x2853"）を全部撮る。
-          out="$RUNNER_TEMP/screenshots"
-          if ! err=$(xcrun simctl io "$udid" screenshot "$out/01-launch.png" 2>&1); then
-            displays=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*[[:space:]]([0-9]+x[0-9]+)$/\1 \2/p')
-            if [ -z "$displays" ]; then printf '%s\n' "$err"; exit 1; fi
-            while read -r id size; do
-              xcrun simctl io "$udid" screenshot --display="$id" "$out/01-launch-display${id}-${size}.png"
-            done <<< "$displays"
-          fi
+          shoot() {
+            local name="$1" err displays id size
+            if ! err=$(xcrun simctl io "$udid" screenshot "$out/$name.png" 2>&1); then
+              displays=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*[[:space:]]([0-9]+x[0-9]+)$/\1 \2/p')
+              if [ -z "$displays" ]; then printf '%s\n' "$err"; return 1; fi
+              while read -r id size; do
+                xcrun simctl io "$udid" screenshot --display="$id" "$out/$name-display${id}-${size}.png"
+              done <<< "$displays"
+            fi
+          }
+          n=0
+          for scene in $SCENES; do
+            n=$((n + 1))
+            case "$scene" in *[!A-Za-z0-9@_-]*) echo "::warning::画面の名前に使えない文字: $scene"; continue ;; esac
+            name="${scene%@dark}"
+            if [ "$scene" != "$name" ]; then xcrun simctl ui "$udid" appearance dark || true; else xcrun simctl ui "$udid" appearance light || true; fi
+            xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+            if [ "$name" = launch ]; then
+              xcrun simctl launch "$udid" "$bundle_id"
+            else
+              xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$name"
+            fi
+            sleep 8
+            shoot "$(printf '%02d' "$n")-${scene/@/-}" || echo "::warning::$scene を撮れませんでした"
+          done
           ls -l "$out"
       - name: Upload screenshots
         if: always()
