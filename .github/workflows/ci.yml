@@ -27,10 +27,12 @@ jobs:
           tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
       - name: shellcheck
-        run: shellcheck scan/scan-sensitive.sh guard/guard.sh tests/*.sh .githooks/pre-push
+        run: shellcheck scan/scan-sensitive.sh guard/guard.sh asc/bundle-id.sh tests/*.sh .githooks/pre-push
       - name: tests
         run: |
           bash tests/scan-test.sh
           bash tests/guard-test.sh
+          bash tests/bundle-id-test.sh
+          python3 asc/test_asc.py
       - name: scan this repository
         uses: ./scan

@@ -6,6 +6,8 @@
 #   App Manager のキーでこれが通るかは、Apple の公開文書では確定できなかった（docs/signing.md）。
 #   最初の実行で失敗したら、証明書とプロファイルを組織の Secrets に入れる手動署名に切り替える案を本人に出す。
 # アップロード: xcrun altool --upload-app（App Store Connect ヘルプ「Upload builds」に載っている方法）。
+# 配信: アップロードのあと distribute ジョブが、処理が終わるのを待ち、内部テストのグループ（無ければ作る。
+#   全ビルドを自動で配信）に入れ、チームのユーザーをテスターに加える（asc/asc.py。App Store Connect API）。
 # 秘密: pull_request からは呼ばないこと（呼び出し元は workflow_dispatch だけにする）。
 name: iOS TestFlight (reusable)
 
@@ -38,6 +40,13 @@ on:
       guard-disabled:
         type: string
         default: "false"
+      distribute:
+        description: アップロードのあと、内部テストのグループに配信する
+        type: boolean
+        default: true
+      internal-group-name:
+        type: string
+        default: daily-internal
     secrets:
       ASC_KEY_ID:
         required: true
@@ -206,6 +215,43 @@ jobs:
             echo "- ビルド番号: \`$BUILD_NUMBER\`"
             echo "- App Store Connect での処理（数分〜数十分）はこのワークフローでは待っていません"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"
+
+  distribute:
+    needs: [upload]
+    if: inputs.distribute
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - name: Distribute to internal testers
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_P8: ${{ secrets.ASC_P8 }}
+          BUILD_NUMBER: ${{ needs.upload.outputs.build-number }}
+          GROUP_NAME: ${{ inputs.internal-group-name }}
+        run: |
+          set -euo pipefail
+          keydir="$RUNNER_TEMP/private_keys"; mkdir -p "$keydir"; chmod 700 "$keydir"
+          ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
+          export ASC_KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          bundle=$(bash .daily-actions/asc/bundle-id.sh project.yml)
+          meta=()
+          if [ -f docs/app-store.json ]; then meta=(--metadata docs/app-store.json); fi
+          python3 .daily-actions/asc/asc.py distribute --bundle-id "$bundle" --build-number "$BUILD_NUMBER" \
+            --group-name "$GROUP_NAME" "${meta[@]}"
       - name: Remove key
         if: always()
         run: rm -rf "$RUNNER_TEMP/private_keys"

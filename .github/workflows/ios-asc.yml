@@ -1,0 +1,125 @@
+# 再利用ワークフロー: App Store Connect API で、提出の直前までの設定をする（asc/asc.py）。
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-asc.yml@<40桁の SHA>
+#   with: actions-sha: <同じ SHA>、command: metadata | distribute
+#   - metadata: docs/app-store.json の名前・サブタイトル・カテゴリ・説明・キーワード・URL・宣伝文を入れ、
+#               提出用のバージョンに最新の処理済みビルドを選ぶ（提出はしない）
+#   - distribute: いちばん新しいビルドを内部テストのグループに配信する（アップロードはしない）
+# しないこと: 審査への提出、App プライバシーの申告（API がない）、価格・配信地域・年齢区分の変更。
+# 秘密: workflow_dispatch からだけ、既定ブランチでだけ動く。
+name: iOS App Store Connect (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      actions-sha:
+        description: 呼び出しの @ に書いたのと同じ daily-actions の 40 桁の SHA
+        type: string
+        required: true
+      command:
+        description: metadata | distribute
+        type: string
+        default: metadata
+      metadata-file:
+        type: string
+        default: docs/app-store.json
+      version:
+        description: 提出用のバージョンが無いときに作る版
+        type: string
+        default: "1.0.0"
+      internal-group-name:
+        type: string
+        default: daily-internal
+      max-per-day:
+        type: number
+        default: 6
+      max-consecutive-failures:
+        type: number
+        default: 3
+      guard-disabled:
+        type: string
+        default: "false"
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_P8:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse untrusted events
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+          COMMAND: ${{ inputs.command }}
+          ACTIONS_SHA: ${{ inputs.actions-sha }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
+          if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
+          case "$COMMAND" in metadata|distribute) ;; *) echo "::error::command は metadata か distribute（今: $COMMAND）"; exit 1 ;; esac
+          if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::actions-sha は 40 桁の SHA にしてください"; exit 1; fi
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/guard
+        with:
+          max-per-day: ${{ inputs.max-per-day }}
+          max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
+          disabled: ${{ inputs.guard-disabled }}
+
+  asc:
+    needs: [guard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - name: App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_P8: ${{ secrets.ASC_P8 }}
+          COMMAND: ${{ inputs.command }}
+          METADATA_FILE: ${{ inputs.metadata-file }}
+          VERSION: ${{ inputs.version }}
+          GROUP_NAME: ${{ inputs.internal-group-name }}
+        run: |
+          set -euo pipefail
+          keydir="$RUNNER_TEMP/private_keys"; mkdir -p "$keydir"; chmod 700 "$keydir"
+          ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
+          export ASC_KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          bundle=$(bash .daily-actions/asc/bundle-id.sh project.yml)
+          if [ "$COMMAND" = metadata ]; then
+            [ -f "$METADATA_FILE" ] || { echo "::error::$METADATA_FILE がありません"; exit 1; }
+            python3 .daily-actions/asc/asc.py metadata --bundle-id "$bundle" --metadata "$METADATA_FILE" \
+              --version "$VERSION" --attach-latest-build
+          else
+            meta=()
+            if [ -f "$METADATA_FILE" ]; then meta=(--metadata "$METADATA_FILE"); fi
+            python3 .daily-actions/asc/asc.py distribute --bundle-id "$bundle" --build-number latest \
+              --group-name "$GROUP_NAME" --wait-minutes 5 "${meta[@]}"
+          fi
+      - name: Remove key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"
