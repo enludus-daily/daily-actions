@@ -2,9 +2,10 @@
 # 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-testflight.yml@<40桁の SHA>
 #   with: actions-sha: <同じ SHA>（中の部品 guard / scan / setup-ios もこの版で使うため）
 #
-# 署名: App Store Connect API のチームキーで xcodebuild -allowProvisioningUpdates を使う（クラウド管理の配布証明書）。
-#   App Manager のキーでこれが通るかは、Apple の公開文書では確定できなかった（docs/signing.md）。
-#   最初の実行で失敗したら、証明書とプロファイルを組織の Secrets に入れる手動署名に切り替える案を本人に出す。
+# 署名: App Store Connect API のチームキーで xcodebuild -allowProvisioningUpdates を使う（プロファイルと配布は自動）。
+#   アーカイブに使う証明書は、組織の Secrets の 1 枚（SIGNING_CERT_P12_BASE64 / SIGNING_CERT_PASSWORD）を
+#   使い捨てのキーチェーンに読み込んで使う。手元に証明書がないと Xcode が実行のたびに新しい証明書を作り、
+#   証明書の数の上限に達するため（2026-11-05。docs/signing.md）。
 # アップロード: xcrun altool --upload-app（App Store Connect ヘルプ「Upload builds」に載っている方法）。
 # 配信: アップロードのあと distribute ジョブが、処理が終わるのを待ち、内部テストのグループ（無ければ作る。
 #   全ビルドを自動で配信）に入れ、チームのユーザーをテスターに加える（asc/asc.py。App Store Connect API）。
@@ -55,6 +56,12 @@ on:
       ASC_P8:
         description: AuthKey_<KEY_ID>.p8 の中身（PEM の文字列）
         required: true
+      SIGNING_CERT_P12_BASE64:
+        description: アーカイブに使う証明書（Apple Development か Apple Distribution、秘密鍵つき）の .p12 を base64 にしたもの
+        required: false
+      SIGNING_CERT_PASSWORD:
+        description: その .p12 のパスワード
+        required: false
     outputs:
       build-number:
         value: ${{ jobs.upload.outputs.build-number }}
@@ -145,6 +152,47 @@ jobs:
           ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
           echo "API_PRIVATE_KEYS_DIR=$keydir" >> "$GITHUB_ENV"
           echo "ASC_KEY_PATH=$keydir/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_ENV"
+      - name: Import signing certificate (fixed, never create a new one)
+        id: cert
+        env:
+          P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$P12_BASE64" ]; then
+            echo "::error::SIGNING_CERT_P12_BASE64 がありません。証明書を作らせないため、ここで止めます（組織の Secrets に入れ、呼び出し元の secrets: で渡す。docs/signing.md）"
+            exit 1
+          fi
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpass=$(uuidgen)
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          p12="$RUNNER_TEMP/signing.p12"
+          ( umask 077; printf '%s' "$P12_BASE64" | tr -d '\r\n ' | openssl base64 -d -A > "$p12" )
+          if ! security import "$p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security >/dev/null; then
+            rm -f "$p12"
+            echo "::error::証明書を読み込めませんでした（.p12 の base64 かパスワードが違う）"
+            exit 1
+          fi
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpass" "$kc" >/dev/null
+          # 既定の検索先に足す（xcodebuild が見つけられるように）
+          existing=$(security list-keychains -d user | tr -d '"' | xargs)
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$kc" $existing
+          echo "SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          ids=$(security find-identity -v -p codesigning "$kc")
+          echo "$ids" | sed -E 's/[0-9A-F]{40}/<fingerprint>/'
+          # 証明書の種類に合わせて、アーカイブで使う署名の名前を決める（ほかの種類の証明書を Xcode に作らせない）
+          if echo "$ids" | grep -q '"Apple Distribution'; then
+            echo "identity=Apple Distribution" >> "$GITHUB_OUTPUT"
+          elif echo "$ids" | grep -q '"Apple Development'; then
+            echo "identity=Apple Development" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::.p12 に Apple Development / Apple Distribution の署名用の証明書（秘密鍵つき）がありません"
+            exit 1
+          fi
       - name: Build number
         id: version
         # 同じ枠（Bundle ID）でも必ず増える値にする。UTC の年月日時分。
@@ -154,6 +202,7 @@ jobs:
           SCHEME: ${{ inputs.scheme }}
           TEAM_ID: ${{ inputs.team-id }}
           BUILD_NUMBER: ${{ steps.version.outputs.build-number }}
+          SIGN_IDENTITY: ${{ steps.cert.outputs.identity }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
@@ -170,6 +219,8 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             | xcbeautify --renderer github-actions
       - name: Export ipa
@@ -215,9 +266,11 @@ jobs:
             echo "- ビルド番号: \`$BUILD_NUMBER\`"
             echo "- App Store Connect での処理（数分〜数十分）はこのワークフローでは待っていません"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Remove key
+      - name: Remove key and keychain
         if: always()
-        run: rm -rf "$RUNNER_TEMP/private_keys"
+        run: |
+          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/signing.p12"
+          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true; fi
 
   distribute:
     needs: [upload]
