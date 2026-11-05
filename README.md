@@ -6,8 +6,8 @@ enludus-daily の iOS アプリ用の再利用ワークフローと composite ac
 |---|---|---|
 | `.github/workflows/ios-ci.yml` | 再利用ワークフロー | 上限の確認 → 秘密・個人情報の検査 → XcodeGen → ビルドとテスト（シミュレータ、署名なし）→ スクリーンショット |
 | `.github/workflows/ios-testflight.yml` | 再利用ワークフロー | 上限の確認 → 検査 → アーカイブ（クラウド署名）→ ipa の書き出し → `altool` で TestFlight へ → 処理を待って内部テストのグループに配信 |
-| `.github/workflows/ios-asc.yml` | 再利用ワークフロー | App Store Connect API：`metadata`（名前・説明・カテゴリ・URL などを入れ、提出用のバージョンにビルドを選ぶ）/ `distribute`（最新のビルドを内部テストに配信） |
-| `asc/` | スクリプト | `asc.py`（App Store Connect API。標準ライブラリと openssl だけ）、`bundle-id.sh` |
+| `.github/workflows/ios-asc.yml` | 再利用ワークフロー | App Store Connect API：`metadata`（名前・説明・カテゴリ・URL などを入れ、提出用のバージョンにビルドを選ぶ）/ `distribute`（最新のビルドを内部テストに配信）/ `products`（App 内課金の商品・価格・配信地域・審査用の画像を作る） |
+| `asc/` | スクリプト | `asc.py`（App Store Connect API。標準ライブラリと openssl だけ）、`iap.py`（App 内課金の商品）、`bundle-id.sh` |
 | `guard/` | composite | 日本時間の1日あたりの実行上限と、連続失敗での停止 |
 | `scan/` | composite | `scan-sensitive.sh`（正本）＋ gitleaks 8.30.1（版とチェックサムで固定） |
 | `setup-ios/` | composite | Xcode の版の選択と XcodeGen 2.46.0（版とハッシュで固定） |
@@ -37,6 +37,15 @@ TestFlight は `workflow_dispatch` からだけ、既定ブランチでだけ動
 - **しないこと**：審査への提出、App プライバシーの申告（公開 API がない）、価格・配信地域・年齢区分、App の新規作成（API がない）。
 - 上限：`ios-asc.yml` は 1 日 20 回、連続 3 回の失敗で停止。
 - メールアドレスなどの個人情報・鍵・トークンはログとまとめに出さない。
+
+
+### App 内課金の商品（asc/iap.py、2026-11-05 本人の許可で追加）
+- 本人の方針：毎日のアプリに課金を必ず入れる。商品の作成と価格は AI が決めてよい（本人の回答 2026-11-05）。
+- アプリの `docs/products.json` のとおりに、買い切り（NON_CONSUMABLE）と自動更新サブスク（AUTO_RENEWABLE）を作る。何度実行しても同じ結果（あるものは作り直さない）。
+- 価格は日本円（基準の国は JPN）。ほかの国は Apple の換算に任せる。サブスクの価格は、まだ無いときだけ入れる（変えるのは本人）。
+- 消耗型（ジェム・コイン）と非更新サブスクは作らない。毎日のアプリはサーバーを持たず、残高や期間を守れないため。
+- 審査への提出はしない。App 内課金は、初めてはアプリのバージョンと一緒に本人が出す。
+- API の形は Apple の OpenAPI 仕様（App Store Connect API 4.6、2026-11-04 版）で確かめた。実際の App Store Connect での動作は、最初の実行で確かめる。
 
 ## 既定値と根拠（2026-11-03 に確認）
 

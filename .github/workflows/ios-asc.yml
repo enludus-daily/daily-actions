@@ -4,7 +4,9 @@
 #   - metadata: docs/app-store.json の名前・サブタイトル・カテゴリ・説明・キーワード・URL・宣伝文を入れ、
 #               提出用のバージョンに最新の処理済みビルドを選ぶ（提出はしない）
 #   - distribute: いちばん新しいビルドを内部テストのグループに配信する（アップロードはしない）
-# しないこと: 審査への提出、App プライバシーの申告（API がない）、価格・配信地域・年齢区分の変更。
+#   - products: docs/products.json の App 内課金（買い切り・自動更新サブスク）を作り、表示名・価格（円）・配信地域・
+#               審査用の画像を入れる（asc/iap.py。消耗型は作らない。提出はしない）
+# しないこと: 審査への提出、App プライバシーの申告（API がない）、アプリ本体の価格・配信地域・年齢区分の変更。
 # 秘密: workflow_dispatch からだけ、既定ブランチでだけ動く。
 name: iOS App Store Connect (reusable)
 
@@ -16,12 +18,15 @@ on:
         type: string
         required: true
       command:
-        description: metadata | distribute
+        description: metadata | distribute | products
         type: string
         default: metadata
       metadata-file:
         type: string
         default: docs/app-store.json
+      products-file:
+        type: string
+        default: docs/products.json
       version:
         description: 提出用のバージョンが無いときに作る版
         type: string
@@ -65,7 +70,7 @@ jobs:
         run: |
           if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
           if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
-          case "$COMMAND" in metadata|distribute) ;; *) echo "::error::command は metadata か distribute（今: $COMMAND）"; exit 1 ;; esac
+          case "$COMMAND" in metadata|distribute|products) ;; *) echo "::error::command は metadata・distribute・products のどれか（今: $COMMAND）"; exit 1 ;; esac
           if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::actions-sha は 40 桁の SHA にしてください"; exit 1; fi
       - name: Checkout daily-actions (pinned)
         uses: actions/checkout@v5
@@ -102,6 +107,7 @@ jobs:
           ASC_P8: ${{ secrets.ASC_P8 }}
           COMMAND: ${{ inputs.command }}
           METADATA_FILE: ${{ inputs.metadata-file }}
+          PRODUCTS_FILE: ${{ inputs.products-file }}
           VERSION: ${{ inputs.version }}
           GROUP_NAME: ${{ inputs.internal-group-name }}
         run: |
@@ -110,7 +116,10 @@ jobs:
           ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
           export ASC_KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8"
           bundle=$(bash .daily-actions/asc/bundle-id.sh project.yml)
-          if [ "$COMMAND" = metadata ]; then
+          if [ "$COMMAND" = products ]; then
+            [ -f "$PRODUCTS_FILE" ] || { echo "::error::$PRODUCTS_FILE がありません"; exit 1; }
+            python3 .daily-actions/asc/iap.py products --bundle-id "$bundle" --products "$PRODUCTS_FILE" --base-dir .
+          elif [ "$COMMAND" = metadata ]; then
             [ -f "$METADATA_FILE" ] || { echo "::error::$METADATA_FILE がありません"; exit 1; }
             python3 .daily-actions/asc/asc.py metadata --bundle-id "$bundle" --metadata "$METADATA_FILE" \
               --version "$VERSION" --attach-latest-build

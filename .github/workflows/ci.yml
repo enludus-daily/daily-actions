@@ -34,5 +34,6 @@ jobs:
           bash tests/guard-test.sh
           bash tests/bundle-id-test.sh
           python3 asc/test_asc.py
+          python3 asc/test_iap.py
       - name: scan this repository
         uses: ./scan
