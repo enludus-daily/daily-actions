@@ -148,7 +148,7 @@ jobs:
           xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$udid" "$app"
           # 診断：画面が複数ある端末（iPhone Duo）の開け閉めの操作を探すため、simctl の ui / io の使い方を出す
-          { xcrun simctl help ui; xcrun simctl help io; } 2>&1 | sed -n '1,80p' || true
+          { echo "--- simctl help io"; xcrun simctl help io; echo "--- simctl io enumerate"; xcrun simctl io "$udid" enumerate; } 2>&1 | sed -n '1,220p' || true
           if [ -n "${POSTURE:-}" ]; then
             # 例: POSTURE="open"（simctl ui <udid> posture <値> がある Xcode でだけ効く）
             xcrun simctl ui "$udid" posture "$POSTURE" || echo "::warning::posture $POSTURE を設定できませんでした"
