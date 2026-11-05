@@ -35,6 +35,10 @@ on:
           screenshotScene を読んでその画面を開く）。名前に @dark を付けるとダークモードで撮る。launch は引数なしの起動。
         type: string
         default: launch
+      screenshot-posture:
+        description: 画面が複数ある端末で、撮る前に設定する姿勢（例 open）。空なら何もしない
+        type: string
+        default: ""
       max-runs-per-day:
         type: number
         default: 40
@@ -130,6 +134,7 @@ jobs:
           SCHEME: ${{ inputs.scheme }}
           DEVICE: ${{ inputs.screenshot-device }}
           SCENES: ${{ inputs.screenshot-scenes }}
+          POSTURE: ${{ inputs.screenshot-posture }}
         run: |
           set -euo pipefail
           xcodebuild build -scheme "$SCHEME" \
@@ -142,6 +147,13 @@ jobs:
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$udid" "$app"
+          # 診断：画面が複数ある端末（iPhone Duo）の開け閉めの操作を探すため、simctl の ui / io の使い方を出す
+          { xcrun simctl help ui; xcrun simctl help io; } 2>&1 | sed -n '1,80p' || true
+          if [ -n "${POSTURE:-}" ]; then
+            # 例: POSTURE="open"（simctl ui <udid> posture <値> がある Xcode でだけ効く）
+            xcrun simctl ui "$udid" posture "$POSTURE" || echo "::warning::posture $POSTURE を設定できませんでした"
+            sleep 3
+          fi
           out="$RUNNER_TEMP/screenshots"
           mkdir -p "$out"
           # iPhone Duo のように画面が複数ある端末では、--display を付けないと撮れない。
