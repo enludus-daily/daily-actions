@@ -27,8 +27,13 @@ on:
         type: string
         default: docs/store-screenshots.json
       locale:
+        description: App Store Connect の言語（ja・en-US など）
         type: string
         default: ja
+      app-language:
+        description: 撮るときのアプリの言語（空ならシミュレータのまま。en なら -AppleLanguages (en) -AppleLocale en_US）
+        type: string
+        default: ""
       upload:
         type: boolean
         default: true
@@ -103,6 +108,7 @@ jobs:
         env:
           SCHEME: ${{ inputs.scheme }}
           CONFIG: ${{ inputs.config-file }}
+          APP_LANGUAGE: ${{ inputs.app-language }}
         run: |
           set -euo pipefail
           [ -f "$CONFIG" ] || { echo "::error::$CONFIG がありません"; exit 1; }
@@ -133,6 +139,13 @@ jobs:
           raw="$RUNNER_TEMP/raw"; out="$RUNNER_TEMP/store-screenshots"
           mkdir -p "$raw" "$out"
           swiftc -O .daily-actions/screenshots/frame.swift -o "$RUNNER_TEMP/frame"
+          lang=()
+          case "$APP_LANGUAGE" in
+            "") ;;
+            en) lang=(-AppleLanguages "(en)" -AppleLocale en_US) ;;
+            *[!a-zA-Z-]*) echo "::error::app-language に使えない文字: $APP_LANGUAGE"; exit 1 ;;
+            *) lang=(-AppleLanguages "($APP_LANGUAGE)" -AppleLocale "$APP_LANGUAGE") ;;
+          esac
           for i in $(seq 0 $((count - 1))); do
             scene=$(jq -r ".shots[$i].scene" "$CONFIG")
             title=$(jq -r ".shots[$i].title // \"\"" "$CONFIG")
@@ -140,8 +153,8 @@ jobs:
             case "$scene" in *[!A-Za-z0-9_-]*) echo "::error::画面の名前に使えない文字: $scene"; exit 1 ;; esac
             n=$(printf '%02d' $((i + 1)))
             xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
-            if [ "$scene" = launch ]; then xcrun simctl launch "$udid" "$bundle_id"
-            else xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$scene"; fi
+            if [ "$scene" = launch ]; then xcrun simctl launch "$udid" "$bundle_id" ${lang[@]+"${lang[@]}"}
+            else xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$scene" ${lang[@]+"${lang[@]}"}; fi
             sleep 8
             xcrun simctl io "$udid" screenshot "$raw/$n-$scene.png"
             "$RUNNER_TEMP/frame" "$raw/$n-$scene.png" "$out/$n-$scene.png" "$title" "$subtitle" "$bg" "$fg" 1290 2796
@@ -149,7 +162,7 @@ jobs:
           ls -l "$out"
       - uses: actions/upload-artifact@v5
         with:
-          name: store-screenshots
+          name: store-screenshots-${{ inputs.locale }}
           path: ${{ runner.temp }}/store-screenshots
           if-no-files-found: error
           retention-days: 30
@@ -172,7 +185,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v5
         with:
-          name: store-screenshots
+          name: store-screenshots-${{ inputs.locale }}
           path: ${{ runner.temp }}/store-screenshots
       - name: Upload to App Store Connect
         env:

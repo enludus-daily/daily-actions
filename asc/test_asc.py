@@ -221,5 +221,46 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(report)
 
 
+class OtherLocaleTests(unittest.TestCase):
+    def test_writes_en_us_block(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump({"locale": "ja", "name": "名前", "description": "説明", "supportUrl": "https://example.com/s",
+                       "privacyPolicyUrl": "https://example.com/p",
+                       "en-US": {"name": "Name", "subtitle": "Sub", "keywords": "snake,pool", "description": "Desc", "promotionalText": "Promo"}}, f)
+        api = FakeApi({
+            ("GET", "/v1/apps?"): {"data": [{"id": "app1", "attributes": {"bundleId": "com.x.001", "primaryLocale": "ja"}}]},
+            ("GET", "/v1/apps/app1/appInfos"): {"data": [{"id": "i1", "attributes": {"state": "PREPARE_FOR_SUBMISSION"}}], "links": {}},
+            ("GET", "/v1/appInfos/i1/appInfoLocalizations"): {"data": [{"id": "il1", "attributes": {"locale": "ja"}}], "links": {}},
+            ("PATCH", "/v1/appInfoLocalizations/il1"): {},
+            ("POST", "/v1/appInfoLocalizations"): {"data": {"id": "il2"}},
+            ("GET", "/v1/apps/app1/appStoreVersions"): {"data": [{"id": "v1", "attributes": {"appStoreState": "PREPARE_FOR_SUBMISSION"}}], "links": {}},
+            ("GET", "/v1/appStoreVersions/v1/appStoreVersionLocalizations"): {"data": [{"id": "vl1", "attributes": {"locale": "ja"}}], "links": {}},
+            ("PATCH", "/v1/appStoreVersionLocalizations/vl1"): {},
+            ("POST", "/v1/appStoreVersionLocalizations"): {"data": {"id": "vl2"}},
+        })
+        try:
+            report = asc.metadata(asc.Client(lambda: "t", opener=api), Args(bundle_id="com.x.001", metadata=f.name, version="1.1.0", attach_latest_build=False))
+        finally:
+            os.unlink(f.name)
+        posts = {p: b for m, p, b in api.calls if m == "POST"}
+        info = posts["/v1/appInfoLocalizations"]["data"]["attributes"]
+        self.assertEqual(info["locale"], "en-US")
+        self.assertEqual(info["name"], "Name")
+        self.assertEqual(info["privacyPolicyUrl"], "https://example.com/p")
+        ver = posts["/v1/appStoreVersionLocalizations"]["data"]["attributes"]
+        self.assertEqual(ver["keywords"], "snake,pool")
+        self.assertEqual(ver["supportUrl"], "https://example.com/s")
+        self.assertTrue(any("en-US" in r for r in report))
+
+    def test_limits_apply_to_other_locales(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump({"locale": "ja", "en-US": {"subtitle": "x" * 31}}, f)
+        try:
+            with self.assertRaises(asc.AscError):
+                asc.load_metadata(f.name)
+        finally:
+            os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@
       いちばん新しいビルドで同じことをする。
   asc.py metadata --bundle-id ... --metadata docs/app-store.json [--version 1.0.0] [--attach-latest-build]
       アプリ名・サブタイトル・プライバシーポリシー URL・カテゴリ・説明・キーワード・サポート URL・宣伝文を入れる。
+      "en-US": {...} のような、ほかの言語のかたまりがあれば、その言語の名前・サブタイトル・説明なども入れる（2026-11-10）。
       --attach-latest-build で、提出用のバージョンに最新の処理済みビルドを選ぶ（提出はしない）。
 
 しないこと: 審査への提出、App プライバシーの申告（API がない）、価格・配信地域・年齢区分の変更。
@@ -166,13 +167,22 @@ def find_localization(items: list[dict], locale: str) -> dict | None:
     return None
 
 
+LIMITS = {"name": 30, "subtitle": 30, "keywords": 100, "promotionalText": 170, "description": 4000, "whatToTest": 4000}
+LOCALE_KEY = __import__("re").compile(r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
+
+
+def other_locales(meta: dict) -> dict:
+    """app-store.json の "en-US": {...} のような、ほかの言語の情報"""
+    return {k: v for k, v in meta.items() if isinstance(v, dict) and LOCALE_KEY.match(k) and k != meta.get("locale")}
+
+
 def load_metadata(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         meta = json.load(f)
-    limits = {"name": 30, "subtitle": 30, "keywords": 100, "promotionalText": 170, "description": 4000, "whatToTest": 4000}
-    for key, limit in limits.items():
-        if key in meta and meta[key] is not None and len(meta[key]) > limit:
-            raise AscError(f"{path} の {key} が {limit} 文字を超えています（{len(meta[key])}）")
+    for where, block in [("", meta)] + [(f"{k}.", v) for k, v in other_locales(meta).items()]:
+        for key, limit in LIMITS.items():
+            if key in block and block[key] is not None and len(block[key]) > limit:
+                raise AscError(f"{path} の {where}{key} が {limit} 文字を超えています（{len(block[key])}）")
     if not meta.get("locale"):
         raise AscError(f"{path} に locale がありません")
     return meta
@@ -313,16 +323,25 @@ def metadata(client: Client, args) -> list[str]:
             "type": "appInfos", "id": info["id"], "relationships": relationships}})
         report.append("カテゴリを入れた")
 
-    info_attrs = compact({"name": meta.get("name"), "subtitle": meta.get("subtitle"), "privacyPolicyUrl": meta.get("privacyPolicyUrl")})
-    loc = find_localization(client.get_all(f"/v1/appInfos/{info['id']}/appInfoLocalizations", limit=50), locale)
-    if loc:
-        client.request("PATCH", f"/v1/appInfoLocalizations/{loc['id']}", {"data": {
-            "type": "appInfoLocalizations", "id": loc["id"], "attributes": info_attrs}})
-    else:
-        client.request("POST", "/v1/appInfoLocalizations", {"data": {
-            "type": "appInfoLocalizations", "attributes": {"locale": locale, **info_attrs},
-            "relationships": {"appInfo": {"data": {"type": "appInfos", "id": info["id"]}}}}})
+    info_locs = client.get_all(f"/v1/appInfos/{info['id']}/appInfoLocalizations", limit=50)
+
+    def put_info(loc_code: str, block: dict) -> None:
+        attrs = compact({"name": block.get("name"), "subtitle": block.get("subtitle"),
+                         "privacyPolicyUrl": block.get("privacyPolicyUrl") or meta.get("privacyPolicyUrl")})
+        loc = find_localization(info_locs, loc_code)
+        if loc:
+            client.request("PATCH", f"/v1/appInfoLocalizations/{loc['id']}", {"data": {
+                "type": "appInfoLocalizations", "id": loc["id"], "attributes": attrs}})
+        else:
+            client.request("POST", "/v1/appInfoLocalizations", {"data": {
+                "type": "appInfoLocalizations", "attributes": {"locale": loc_code, **attrs},
+                "relationships": {"appInfo": {"data": {"type": "appInfos", "id": info["id"]}}}}})
+
+    put_info(locale, meta)
     report.append("アプリ名・サブタイトル・プライバシーポリシー URL を入れた")
+    for loc_code, block in other_locales(meta).items():
+        put_info(loc_code, block)
+        report.append(f"{loc_code}：アプリ名・サブタイトルを入れた")
 
     versions = client.get_all(f"/v1/apps/{app_id}/appStoreVersions", **{q("filter[platform]"): "IOS", "limit": 20})
     version = pick_editable_version(versions)
@@ -333,20 +352,30 @@ def metadata(client: Client, args) -> list[str]:
         version = created["data"]
         report.append(f"提出用のバージョン {args.version} を作った")
 
-    version_attrs = compact({
-        "description": meta.get("description"), "keywords": meta.get("keywords"),
-        "supportUrl": meta.get("supportUrl"), "marketingUrl": meta.get("marketingUrl"),
-        "promotionalText": meta.get("promotionalText"),
-    })
-    vloc = find_localization(client.get_all(f"/v1/appStoreVersions/{version['id']}/appStoreVersionLocalizations", limit=50), locale)
-    if vloc:
-        client.request("PATCH", f"/v1/appStoreVersionLocalizations/{vloc['id']}", {"data": {
-            "type": "appStoreVersionLocalizations", "id": vloc["id"], "attributes": version_attrs}})
-    else:
-        client.request("POST", "/v1/appStoreVersionLocalizations", {"data": {
-            "type": "appStoreVersionLocalizations", "attributes": {"locale": locale, **version_attrs},
-            "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": version["id"]}}}}})
+    vlocs = client.get_all(f"/v1/appStoreVersions/{version['id']}/appStoreVersionLocalizations", limit=50)
+
+    def put_version(loc_code: str, block: dict) -> None:
+        attrs = compact({
+            "description": block.get("description"), "keywords": block.get("keywords"),
+            "supportUrl": block.get("supportUrl") or meta.get("supportUrl"),
+            "marketingUrl": block.get("marketingUrl") or meta.get("marketingUrl"),
+            "promotionalText": block.get("promotionalText"),
+        })
+        vloc = find_localization(vlocs, loc_code)
+        if vloc:
+            client.request("PATCH", f"/v1/appStoreVersionLocalizations/{vloc['id']}", {"data": {
+                "type": "appStoreVersionLocalizations", "id": vloc["id"], "attributes": attrs}})
+        else:
+            client.request("POST", "/v1/appStoreVersionLocalizations", {"data": {
+                "type": "appStoreVersionLocalizations", "attributes": {"locale": loc_code, **attrs},
+                "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": version["id"]}}}}})
+
+    put_version(locale, meta)
     report.append("説明・キーワード・サポート URL・宣伝文を入れた")
+    for loc_code, block in other_locales(meta).items():
+        if block.get("description"):
+            put_version(loc_code, block)
+            report.append(f"{loc_code}：説明・キーワード・宣伝文を入れた")
 
     if args.attach_latest_build:
         builds = client.get("/v1/builds", **{q("filter[app]"): app_id, q("filter[processingState]"): "VALID",

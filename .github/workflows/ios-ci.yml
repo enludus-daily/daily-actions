@@ -172,13 +172,22 @@ jobs:
           for scene in $SCENES; do
             n=$((n + 1))
             case "$scene" in *[!A-Za-z0-9@_-]*) echo "::warning::画面の名前に使えない文字: $scene"; continue ;; esac
-            name="${scene%@dark}"
-            if [ "$scene" != "$name" ]; then xcrun simctl ui "$udid" appearance dark || true; else xcrun simctl ui "$udid" appearance light || true; fi
+            # 名前の後ろの @dark でダークモード、@en で英語（-AppleLanguages (en) -AppleLocale en_US）。両方つけてよい（例: shop@en@dark）
+            name="$scene"; dark=0; lang=()
+            while [[ "$name" == *@* ]]; do
+              suffix="${name##*@}"; name="${name%@*}"
+              case "$suffix" in
+                dark) dark=1 ;;
+                en) lang=(-AppleLanguages "(en)" -AppleLocale en_US) ;;
+                *) echo "::warning::知らない印: @$suffix" ;;
+              esac
+            done
+            if [ "$dark" = 1 ]; then xcrun simctl ui "$udid" appearance dark || true; else xcrun simctl ui "$udid" appearance light || true; fi
             xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
             if [ "$name" = launch ]; then
-              xcrun simctl launch "$udid" "$bundle_id"
+              xcrun simctl launch "$udid" "$bundle_id" ${lang[@]+"${lang[@]}"}
             else
-              xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$name"
+              xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$name" ${lang[@]+"${lang[@]}"}
             fi
             sleep 8
             shoot "$(printf '%02d' "$n")-${scene/@/-}" || echo "::warning::$scene を撮れませんでした"
