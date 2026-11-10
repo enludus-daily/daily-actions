@@ -4,7 +4,7 @@ enludus-daily の iOS アプリ用の再利用ワークフローと composite ac
 
 | 名前 | 種類 | すること |
 |---|---|---|
-| `.github/workflows/ios-ci.yml` | 再利用ワークフロー | 上限の確認 → 秘密・個人情報の検査 → XcodeGen → ビルドとテスト（シミュレータ、署名なし）→ スクリーンショット（画面の名前に `@dark` でダークモード、`@en` で英語） |
+| `.github/workflows/ios-ci.yml` | 再利用ワークフロー | 上限の確認 → 秘密・個人情報の検査 → XcodeGen → ビルドとテスト（シミュレータ、署名なし）→ スクリーンショット（画面の名前に `@dark` でダークモード、`@en` で英語）→ `demo-video: en` でデモの録画（起動引数 `-demo`、artifact `demo-video`。YouTube のシリーズ用） |
 | `.github/workflows/ios-testflight.yml` | 再利用ワークフロー | 上限の確認 → 検査 → アーカイブ（クラウド署名）→ ipa の書き出し → `altool` で TestFlight へ → 処理を待って内部テストのグループに配信 |
 | `.github/workflows/ios-asc.yml` | 再利用ワークフロー | App Store Connect API：`metadata`（名前・説明・カテゴリ・URL などを入れ、提出用のバージョンにビルドを選ぶ）/ `distribute`（最新のビルドを内部テストに配信）/ `products`（App 内課金の商品・価格・配信地域・審査用の画像を作る）/ `submit`（`confirm-version` と同じ版のときだけ、バージョンと App 内課金を審査に出す）/ `withdraw`（審査待ち・審査中のものを取り下げる） |
 | `.github/workflows/ios-store-screenshots.yml` | 再利用ワークフロー | 6.9 インチの iPhone のシミュレータで各画面を撮る → `screenshots/frame.swift` で見出しと枠をつけて 1290×2796 にする → 提出用のバージョンの `APP_IPHONE_67` を入れ替える。`app-language: en` で英語の画面を撮り、`locale: en-US` に入れる |

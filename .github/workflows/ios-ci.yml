@@ -39,6 +39,16 @@ on:
         description: 画面が複数ある端末で、撮る前に設定する姿勢（例 open）。空なら何もしない
         type: string
         default: ""
+      demo-video:
+        description: |
+          デモの録画（YouTube の「AI が毎日アプリを作る」シリーズ用。2026-11-10 本人の許可で追加）。
+          en / ja で、その言語のアプリを起動引数 -demo で開き、screenshot-device で録画して artifact demo-video に置く。空なら録らない
+        type: string
+        default: ""
+      demo-seconds:
+        description: 録画の長さ（秒）。アプリの -demo は 15〜20 秒で主な流れを再生する
+        type: number
+        default: 22
       max-runs-per-day:
         type: number
         default: 40
@@ -193,6 +203,59 @@ jobs:
             shoot "$(printf '%02d' "$n")-${scene/@/-}" || echo "::warning::$scene を撮れませんでした"
           done
           ls -l "$out"
+      - name: Demo video (best effort)
+        if: inputs.demo-video != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          DEVICE: ${{ inputs.screenshot-device }}
+          DEMO_LANG: ${{ inputs.demo-video }}
+          DEMO_SECONDS: ${{ inputs.demo-seconds }}
+        run: |
+          set -euo pipefail
+          case "$DEMO_LANG" in en) lang=(-AppleLanguages "(en)" -AppleLocale en_US) ;; ja) lang=(-AppleLanguages "(ja)" -AppleLocale ja_JP) ;; *) echo "::warning::demo-video は en か ja: $DEMO_LANG"; exit 0 ;; esac
+          # 前の手順（Screenshot）でビルド・インストール済み。無ければここで作る
+          app=$(find "$RUNNER_TEMP/dd-shot/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' 2>/dev/null | head -1 || true)
+          if [ -z "$app" ]; then
+            xcodebuild build -scheme "$SCHEME" -destination "platform=iOS Simulator,name=$DEVICE,OS=latest" \
+              -derivedDataPath "$RUNNER_TEMP/dd-shot" CODE_SIGNING_ALLOWED=NO -quiet
+            app=$(find "$RUNNER_TEMP/dd-shot/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' | head -1)
+          fi
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          udid=$(xcrun simctl list devices available -j | jq -r --arg n "$DEVICE" '[.devices[][] | select(.name == $n)][-1].udid')
+          xcrun simctl boot "$udid" 2>/dev/null || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
+          xcrun simctl install "$udid" "$app"
+          xcrun simctl ui "$udid" appearance light || true
+          xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+          out="$RUNNER_TEMP/demo"
+          mkdir -p "$out"
+          # 画面が複数ある端末（iPhone Duo）は --display が要る。スクリーンショットのエラーに並ぶ最初の primary の画面を使う
+          display=()
+          if ! err=$(xcrun simctl io "$udid" screenshot "$out/probe.png" 2>&1); then
+            id=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*primary.*/\1/p' | head -1)
+            [ -n "$id" ] && display=(--display="$id")
+          fi
+          rm -f "$out/probe.png"
+          xcrun simctl io "$udid" recordVideo --codec=h264 --force ${display[@]+"${display[@]}"} "$out/demo-$DEMO_LANG.mp4" &
+          rec=$!
+          sleep 2
+          xcrun simctl launch "$udid" "$bundle_id" -demo ${lang[@]+"${lang[@]}"}
+          sleep "$DEMO_SECONDS"
+          kill -INT "$rec"
+          wait "$rec" || true
+          ls -l "$out"
+          [ -s "$out/demo-$DEMO_LANG.mp4" ] || echo "::warning::デモを録画できませんでした"
+      - name: Upload demo video
+        if: always() && inputs.demo-video != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: demo-video
+          path: ${{ runner.temp }}/demo
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v5
