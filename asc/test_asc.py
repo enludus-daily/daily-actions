@@ -262,5 +262,19 @@ class OtherLocaleTests(unittest.TestCase):
             os.unlink(f.name)
 
 
+class ErrorTextTests(unittest.TestCase):
+    def test_associated_errors_are_shown(self):
+        x = {"code": "STATE_ERROR.ENTITY_STATE_INVALID", "detail": "This resource cannot be reviewed",
+             "meta": {"associatedErrors": {"/v1/appStoreVersions/v1": [
+                 {"code": "ENTITY_ERROR.ATTRIBUTE.REQUIRED", "detail": "You must provide a value for the attribute 'supportUrl'"}]}}}
+        text = asc.describe_error(x)
+        self.assertIn("cannot be reviewed", text)
+        self.assertIn("/v1/appStoreVersions/v1 ENTITY_ERROR.ATTRIBUTE.REQUIRED", text)
+        self.assertIn("supportUrl", text)
+
+    def test_plain_error_has_no_reason_part(self):
+        self.assertEqual(asc.describe_error({"code": "X", "detail": "y"}), "X: y")
+
+
 if __name__ == "__main__":
     unittest.main()

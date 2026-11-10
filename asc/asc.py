@@ -37,6 +37,17 @@ class AscError(Exception):
     pass
 
 
+def describe_error(x: dict) -> str:
+    """Apple のエラー 1 つを 1 行に。「associated errors を見よ」のときは、その中身（足りないもの）も並べる"""
+    text = f"{x.get('code', '')}: {x.get('detail') or x.get('title', '')}"
+    assoc = (x.get("meta") or {}).get("associatedErrors") or {}
+    parts = []
+    for where, items in assoc.items():
+        for a in items or []:
+            parts.append(f"{where} {a.get('code', '')}: {a.get('detail') or a.get('title', '')}".strip())
+    return text + (f"（理由: {' / '.join(parts)}）" if parts else "")
+
+
 # ---------- JWT（ES256） ----------
 
 def b64url(data: bytes) -> str:
@@ -114,7 +125,7 @@ class Client:
             detail = ""
             try:
                 errors = json.loads(e.read()).get("errors", [])
-                detail = "; ".join(f"{x.get('code', '')}: {x.get('detail') or x.get('title', '')}" for x in errors)
+                detail = "; ".join(describe_error(x) for x in errors)
             except Exception:  # noqa: BLE001 - 本文が JSON でないとき
                 pass
             raise AscError(f"{method} {urllib.parse.urlsplit(url).path} → HTTP {e.code} {detail}".strip()) from None
