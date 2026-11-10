@@ -1,6 +1,8 @@
 """store.py のテスト（ネットワークに出ない。python3 asc/test_store.py）"""
+import io
 import json
 import os
+import urllib.error
 import sys
 import tempfile
 import unittest
@@ -55,6 +57,23 @@ class SubmitTests(unittest.TestCase):
         item = next(b for m, p, b in api.calls if p == "/v1/reviewSubmissionItems")
         self.assertEqual(item["data"]["relationships"]["appStoreVersion"]["data"]["id"], "v1")
         self.assertIn("審査に提出した", report)
+
+    def test_first_purchases_attached_in_the_web_are_skipped(self):
+        path = products_file([PRO])
+        try:
+            api = FakeApi(self.routes())
+
+            def opener(req, timeout=0):
+                if req.get_method() == "POST" and req.full_url.endswith("/v1/inAppPurchaseSubmissions"):
+                    body = b'{"errors":[{"code":"STATE_ERROR.INVALID_REQUEST_ENTITY_STATE_INVALID","detail":"cannot be reviewed"}]}'
+                    raise urllib.error.HTTPError(req.full_url, 409, "err", {}, io.BytesIO(body))
+                return api(req, timeout)
+            report = store.submit(asc.Client(lambda: "t", opener=opener),
+                                  Args(bundle_id="com.x.006", confirm_version="1.0.0", products=path))
+        finally:
+            os.unlink(path)
+        self.assertIn("審査に提出した", report)
+        self.assertTrue(any("API では出せない" in r for r in report))
 
     def test_refuses_a_different_version(self):
         api = FakeApi(self.routes())

@@ -9,6 +9,7 @@
       提出用のバージョンの、その言語・その画面サイズのスクリーンショットを、dir の PNG（名前の順）に入れ替える。
 
 提出の前に本人がすること（API がないもの）: App プライバシーの申告・年齢区分・審査用の連絡先。
+初めての App 内課金は、バージョンのページの「App 内課金とサブスクリプション」で本人が付ける（API で出そうとすると STATE_ERROR になるので、そのときは飛ばしてバージョンを出す）。
 足りないときは Apple のエラーをそのまま出して止まる（推測で埋めない）。
 """
 import argparse
@@ -46,10 +47,16 @@ def submit_in_app_purchases(client, app_id: str, products_path: str, bundle_id: 
         item = found[0]
         state = item.get("attributes", {}).get("state")
         if state == "READY_TO_SUBMIT":
-            client.request("POST", "/v1/inAppPurchaseSubmissions", {"data": {
-                "type": "inAppPurchaseSubmissions",
-                "relationships": {"inAppPurchaseV2": iap.rel("inAppPurchases", item["id"])}}})
-            report.append(f"{p['productId']}：審査に出した（アプリのバージョンといっしょに見てもらう）")
+            try:
+                client.request("POST", "/v1/inAppPurchaseSubmissions", {"data": {
+                    "type": "inAppPurchaseSubmissions",
+                    "relationships": {"inAppPurchaseV2": iap.rel("inAppPurchases", item["id"])}}})
+                report.append(f"{p['productId']}：審査に出した（アプリのバージョンといっしょに見てもらう）")
+            except AscError as e:
+                # 初めての App 内課金は API では出せない（バージョンのページで本人が付け、バージョンといっしょに審査される）
+                if "STATE_ERROR" not in str(e):
+                    raise
+                report.append(f"{p['productId']}：API では出せない状態（初めての App 内課金は、バージョンのページで付けたものがいっしょに審査される）")
         elif state in ("MISSING_METADATA", "DEVELOPER_ACTION_NEEDED", "REJECTED"):
             raise AscError(f"{p['productId']} は {state}。表示名・価格・審査用の画像を確かめる（products を実行し直す）")
         else:
