@@ -5,6 +5,8 @@
   store.py submit --bundle-id com.enludus.daily.006 --confirm-version 1.0.0 [--products docs/products.json]
       提出用のバージョン（--confirm-version と同じ版のときだけ）を審査に出す。
       products.json の App 内課金で「提出の準備ができた」ものは、いっしょに審査に出す。
+  store.py withdraw --bundle-id com.enludus.daily.006
+      審査待ち・審査中のものを取り下げる（本人が「取り下げて」と言ったときだけ）。
   store.py screenshots --bundle-id ... --dir shots/ [--display-type APP_IPHONE_67] [--locale ja]
       提出用のバージョンの、その言語・その画面サイズのスクリーンショットを、dir の PNG（名前の順）に入れ替える。
 
@@ -22,6 +24,7 @@ from asc import AscError, q  # noqa: E402
 import iap  # noqa: E402
 
 SUBMITTABLE_REVIEW_STATES = {"READY_FOR_REVIEW", "UNRESOLVED_ISSUES"}
+WITHDRAWABLE_REVIEW_STATES = {"WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"}
 DISPLAY_TYPES = {"APP_IPHONE_67", "APP_IPHONE_65", "APP_IPHONE_61", "APP_IPHONE_55"}
 
 
@@ -102,6 +105,24 @@ def submit(client, args) -> list[str]:
     return report
 
 
+# ---------- 取り下げ ----------
+
+def withdraw(client, args) -> list[str]:
+    """審査に出しているもの（審査待ち・審査中）を取り下げる。取り下げたバージョンは、また編集・提出できる"""
+    app = asc.find_app(client, args.bundle_id)
+    subs = client.get_all("/v1/reviewSubmissions", **{q("filter[app]"): app["id"], q("filter[platform]"): "IOS", "limit": 20})
+    targets = [s for s in subs if s.get("attributes", {}).get("state") in WITHDRAWABLE_REVIEW_STATES]
+    if not targets:
+        states = sorted({s.get("attributes", {}).get("state") for s in subs})
+        return [f"取り下げるものはない（審査の状態: {states or 'なし'}）"]
+    report = []
+    for s in targets:
+        client.request("PATCH", f"/v1/reviewSubmissions/{s['id']}", {"data": {
+            "type": "reviewSubmissions", "id": s["id"], "attributes": {"canceled": True}}})
+        report.append(f"審査を取り下げた（{s.get('attributes', {}).get('state')} → 取り下げ中）")
+    return report
+
+
 # ---------- スクリーンショット ----------
 
 def list_pngs(directory: str) -> list[str]:
@@ -144,6 +165,8 @@ def main(argv=None) -> int:
     s.add_argument("--bundle-id", required=True)
     s.add_argument("--confirm-version", required=True)
     s.add_argument("--products", default="")
+    w = sub.add_parser("withdraw")
+    w.add_argument("--bundle-id", required=True)
     sh = sub.add_parser("screenshots")
     sh.add_argument("--bundle-id", required=True)
     sh.add_argument("--dir", required=True)
@@ -157,7 +180,7 @@ def main(argv=None) -> int:
         return 2
     client = asc.Client(lambda: asc.make_token(key_id, issuer, key_path))
     try:
-        report = submit(client, args) if args.command == "submit" else screenshots(client, args)
+        report = {"submit": submit, "withdraw": withdraw, "screenshots": screenshots}[args.command](client, args)
     except AscError as e:
         print(f"::error::{e}", file=sys.stderr)
         return 1

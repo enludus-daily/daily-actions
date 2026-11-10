@@ -109,6 +109,25 @@ class SubmitTests(unittest.TestCase):
         self.assertIn(("PATCH", "/v1/reviewSubmissions/rs1"), calls)
 
 
+class WithdrawTests(unittest.TestCase):
+    def test_cancels_a_waiting_submission(self):
+        api = FakeApi({**APP,
+                       ("GET", "/v1/reviewSubmissions?"): {"data": [{"id": "rs1", "attributes": {"state": "WAITING_FOR_REVIEW"}},
+                                                                    {"id": "rs0", "attributes": {"state": "COMPLETE"}}], "links": {}},
+                       ("PATCH", "/v1/reviewSubmissions/rs1"): {"data": {"id": "rs1"}}})
+        report = store.withdraw(asc.Client(lambda: "t", opener=api), Args(bundle_id="com.x.006"))
+        patches = [(p, b) for m, p, b in api.calls if m == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        self.assertTrue(patches[0][1]["data"]["attributes"]["canceled"])
+        self.assertIn("取り下げた", report[0])
+
+    def test_nothing_to_withdraw_is_not_an_error(self):
+        api = FakeApi({**APP, ("GET", "/v1/reviewSubmissions?"): {"data": [{"id": "rs0", "attributes": {"state": "COMPLETE"}}], "links": {}}})
+        report = store.withdraw(asc.Client(lambda: "t", opener=api), Args(bundle_id="com.x.006"))
+        self.assertFalse(any(m == "PATCH" for m, _, _ in api.calls))
+        self.assertIn("取り下げるものはない", report[0])
+
+
 class ScreenshotTests(unittest.TestCase):
     def test_replaces_screenshots_in_order(self):
         with tempfile.TemporaryDirectory() as d:

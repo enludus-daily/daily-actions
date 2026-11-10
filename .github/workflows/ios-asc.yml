@@ -8,6 +8,7 @@
 #               審査用の画像を入れる（asc/iap.py。消耗型は作らない。提出はしない）
 #   - submit: 提出用のバージョン（confirm-version と同じ版のときだけ）と、提出の準備ができた App 内課金を審査に出す
 #             （asc/store.py。2026-11-10 本人の許可で追加。アプリ側は本人が「出して」と言ったときだけ使う）
+#   - withdraw: 審査待ち・審査中のものを取り下げる（本人が「取り下げて」と言ったときだけ）
 # しないこと: App プライバシーの申告（API がない）、アプリ本体の価格・配信地域・年齢区分の変更。
 # 秘密: workflow_dispatch からだけ、既定ブランチでだけ動く。
 name: iOS App Store Connect (reusable)
@@ -20,7 +21,7 @@ on:
         type: string
         required: true
       command:
-        description: metadata | distribute | products | submit
+        description: metadata | distribute | products | submit | withdraw
         type: string
         default: metadata
       confirm-version:
@@ -76,7 +77,7 @@ jobs:
         run: |
           if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
           if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
-          case "$COMMAND" in metadata|distribute|products|submit) ;; *) echo "::error::command は metadata・distribute・products・submit のどれか（今: $COMMAND）"; exit 1 ;; esac
+          case "$COMMAND" in metadata|distribute|products|submit|withdraw) ;; *) echo "::error::command は metadata・distribute・products・submit・withdraw のどれか（今: $COMMAND）"; exit 1 ;; esac
           if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::actions-sha は 40 桁の SHA にしてください"; exit 1; fi
       - name: Checkout daily-actions (pinned)
         uses: actions/checkout@v5
@@ -123,7 +124,9 @@ jobs:
           ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
           export ASC_KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8"
           bundle=$(bash .daily-actions/asc/bundle-id.sh project.yml)
-          if [ "$COMMAND" = submit ]; then
+          if [ "$COMMAND" = withdraw ]; then
+            python3 .daily-actions/asc/store.py withdraw --bundle-id "$bundle"
+          elif [ "$COMMAND" = submit ]; then
             [ -n "$CONFIRM_VERSION" ] || { echo "::error::submit には confirm-version（出すバージョン）が要ります"; exit 1; }
             python3 .daily-actions/asc/store.py submit --bundle-id "$bundle" --confirm-version "$CONFIRM_VERSION" --products "$PRODUCTS_FILE"
           elif [ "$COMMAND" = products ]; then
