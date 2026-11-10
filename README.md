@@ -6,8 +6,10 @@ enludus-daily の iOS アプリ用の再利用ワークフローと composite ac
 |---|---|---|
 | `.github/workflows/ios-ci.yml` | 再利用ワークフロー | 上限の確認 → 秘密・個人情報の検査 → XcodeGen → ビルドとテスト（シミュレータ、署名なし）→ スクリーンショット |
 | `.github/workflows/ios-testflight.yml` | 再利用ワークフロー | 上限の確認 → 検査 → アーカイブ（クラウド署名）→ ipa の書き出し → `altool` で TestFlight へ → 処理を待って内部テストのグループに配信 |
-| `.github/workflows/ios-asc.yml` | 再利用ワークフロー | App Store Connect API：`metadata`（名前・説明・カテゴリ・URL などを入れ、提出用のバージョンにビルドを選ぶ）/ `distribute`（最新のビルドを内部テストに配信）/ `products`（App 内課金の商品・価格・配信地域・審査用の画像を作る） |
-| `asc/` | スクリプト | `asc.py`（App Store Connect API。標準ライブラリと openssl だけ）、`iap.py`（App 内課金の商品）、`bundle-id.sh` |
+| `.github/workflows/ios-asc.yml` | 再利用ワークフロー | App Store Connect API：`metadata`（名前・説明・カテゴリ・URL などを入れ、提出用のバージョンにビルドを選ぶ）/ `distribute`（最新のビルドを内部テストに配信）/ `products`（App 内課金の商品・価格・配信地域・審査用の画像を作る）/ `submit`（`confirm-version` と同じ版のときだけ、バージョンと App 内課金を審査に出す） |
+| `.github/workflows/ios-store-screenshots.yml` | 再利用ワークフロー | 6.9 インチの iPhone のシミュレータで各画面を撮る → `screenshots/frame.swift` で見出しと枠をつけて 1290×2796 にする → 提出用のバージョンの `APP_IPHONE_67` を入れ替える |
+| `asc/` | スクリプト | `asc.py`（App Store Connect API。標準ライブラリと openssl だけ）、`iap.py`（App 内課金の商品）、`store.py`（審査への提出・ストアのスクリーンショット）、`bundle-id.sh` |
+| `screenshots/` | スクリプト | `frame.swift`（macOS の標準の部品だけで、ストア用の画像を作る） |
 | `guard/` | composite | 日本時間の1日あたりの実行上限と、連続失敗での停止 |
 | `scan/` | composite | `scan-sensitive.sh`（正本）＋ gitleaks 8.30.1（版とチェックサムで固定） |
 | `setup-ios/` | composite | Xcode の版の選択と XcodeGen 2.46.0（版とハッシュで固定） |
@@ -34,7 +36,9 @@ TestFlight は `workflow_dispatch` からだけ、既定ブランチでだけ動
 - 鍵は TestFlight と同じ 3 つの Secrets（Admin のチームキー。`docs/signing.md`）。JWT（ES256）は openssl で署名し、外部のパッケージは使わない。
 - `distribute`：ビルドの処理（VALID）を待つ → 輸出コンプライアンスが未回答なら「標準の暗号だけ（NO）」と答える → 「テストの内容」を書く → 内部テストのグループ `daily-internal` を探す（無ければ作る。**全ビルドを自動で配信**）→ App Store Connect のユーザーを内部テスターに加える。
 - `metadata`：アプリの `docs/app-store.json` を読み、アプリ名・サブタイトル・プライバシーポリシー URL・カテゴリ・説明・キーワード・サポート URL・宣伝文を入れる。提出用のバージョンが無ければ作り、最新の処理済みビルドを選ぶ。
-- **しないこと**：審査への提出、App プライバシーの申告（公開 API がない）、価格・配信地域・年齢区分、App の新規作成（API がない）。
+- `submit`（2026-11-10 本人の許可で追加）：提出用のバージョンが `confirm-version` と同じときだけ、App 内課金（提出の準備ができたもの）といっしょに審査に出す。App プライバシー・年齢区分・審査用の連絡先が足りないと Apple のエラーで止まる。アプリ側は、本人が「出して」と言ったときだけ実行する。
+- ストアのスクリーンショット（2026-11-10 本人の許可で追加）：`ios-store-screenshots.yml`。アプリの `docs/store-screenshots.json` の画面と見出しで作る。1 日 10 回、連続 2 回の失敗で停止。
+- **しないこと**：App プライバシーの申告（公開 API がない）、価格・配信地域・年齢区分、App の新規作成（API がない）。
 - 上限：`ios-asc.yml` は 1 日 20 回、連続 3 回の失敗で停止。
 - メールアドレスなどの個人情報・鍵・トークンはログとまとめに出さない。
 

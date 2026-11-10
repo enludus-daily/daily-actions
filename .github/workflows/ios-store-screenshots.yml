@@ -1,0 +1,193 @@
+# 再利用ワークフロー: ストア用のスクリーンショットを撮って加工し、App Store Connect に入れる（2026-11-10 本人の許可で追加）。
+# 呼び出し: uses: enludus-daily/daily-actions/.github/workflows/ios-store-screenshots.yml@<40桁の SHA>
+#   アプリの docs/store-screenshots.json:
+#     {"device": "iPhone 17 Pro Max", "background": "#FFD966", "text": "#3A2340",
+#      "shots": [{"scene": "launch", "title": "見出し", "subtitle": "小見出し"}, ...]}   （10 枚まで）
+#   scene はアプリが起動引数 -screenshotScene <scene> で開く画面（launch は引数なし）
+# 1. シミュレータ（6.9 インチの iPhone）で各画面を撮る → 2. screenshots/frame.swift で見出しと枠をつけて 1290×2796 にする
+# 3. upload: true のとき asc/store.py で、提出用のバージョンの APP_IPHONE_67 を入れ替える（false なら artifact だけ）
+name: iOS store screenshots (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      actions-sha:
+        type: string
+        required: true
+      scheme:
+        type: string
+        required: true
+      runs-on:
+        type: string
+        default: macos-15
+      xcode-version:
+        type: string
+        default: "16.4"
+      config-file:
+        type: string
+        default: docs/store-screenshots.json
+      locale:
+        type: string
+        default: ja
+      upload:
+        type: boolean
+        default: true
+      max-per-day:
+        type: number
+        default: 10
+      max-consecutive-failures:
+        type: number
+        default: 2
+      guard-disabled:
+        type: string
+        default: "false"
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_P8:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse untrusted events
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+          ACTIONS_SHA: ${{ inputs.actions-sha }}
+        run: |
+          if [ "$EVENT" != "workflow_dispatch" ]; then echo "::error::workflow_dispatch からだけ実行します（今: $EVENT）"; exit 1; fi
+          if [ "$REF" != "$DEFAULT_REF" ]; then echo "::error::既定ブランチからだけ実行します（今: $REF）"; exit 1; fi
+          if ! [[ "$ACTIONS_SHA" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::actions-sha は 40 桁の SHA にしてください"; exit 1; fi
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/guard
+        with:
+          max-per-day: ${{ inputs.max-per-day }}
+          max-consecutive-failures: ${{ inputs.max-consecutive-failures }}
+          disabled: ${{ inputs.guard-disabled }}
+
+  shoot:
+    needs: [guard]
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/setup-ios
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+      - name: Shoot and frame
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          CONFIG: ${{ inputs.config-file }}
+        run: |
+          set -euo pipefail
+          [ -f "$CONFIG" ] || { echo "::error::$CONFIG がありません"; exit 1; }
+          count=$(jq '.shots | length' "$CONFIG")
+          if [ "$count" -lt 1 ] || [ "$count" -gt 10 ]; then echo "::error::shots は 1〜10 枚（今: $count）"; exit 1; fi
+          want=$(jq -r '.device // "iPhone 17 Pro Max"' "$CONFIG")
+          bg=$(jq -r '.background // "#FFFFFF"' "$CONFIG")
+          fg=$(jq -r '.text // "#222222"' "$CONFIG")
+          # 6.9 インチの端末を探す（名前が無ければ Pro Max のいちばん新しいもの）
+          devices=$(xcrun simctl list devices available -j)
+          udid=$(jq -r --arg n "$want" '[.devices[][] | select(.name == $n)][-1].udid // empty' <<< "$devices")
+          if [ -z "$udid" ]; then
+            udid=$(jq -r '[.devices[][] | select(.name | test("Pro Max"))][-1].udid // empty' <<< "$devices")
+            echo "::warning::$want が無いので、ほかの Pro Max を使います"
+          fi
+          [ -n "$udid" ] || { echo "::error::6.9 インチの iPhone のシミュレータがありません"; exit 1; }
+          name=$(jq -r --arg u "$udid" '[.devices[][] | select(.udid == $u)][0].name' <<< "$devices")
+          echo "端末: $name"
+          xcodebuild build -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$udid" \
+            -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -quiet
+          app=$(find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' | head -1)
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
+          xcrun simctl ui "$udid" appearance light || true
+          xcrun simctl install "$udid" "$app"
+          raw="$RUNNER_TEMP/raw"; out="$RUNNER_TEMP/store-screenshots"
+          mkdir -p "$raw" "$out"
+          swiftc -O .daily-actions/screenshots/frame.swift -o "$RUNNER_TEMP/frame"
+          for i in $(seq 0 $((count - 1))); do
+            scene=$(jq -r ".shots[$i].scene" "$CONFIG")
+            title=$(jq -r ".shots[$i].title // \"\"" "$CONFIG")
+            subtitle=$(jq -r ".shots[$i].subtitle // \"\"" "$CONFIG")
+            case "$scene" in *[!A-Za-z0-9_-]*) echo "::error::画面の名前に使えない文字: $scene"; exit 1 ;; esac
+            n=$(printf '%02d' $((i + 1)))
+            xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+            if [ "$scene" = launch ]; then xcrun simctl launch "$udid" "$bundle_id"
+            else xcrun simctl launch "$udid" "$bundle_id" -screenshotScene "$scene"; fi
+            sleep 8
+            xcrun simctl io "$udid" screenshot "$raw/$n-$scene.png"
+            "$RUNNER_TEMP/frame" "$raw/$n-$scene.png" "$out/$n-$scene.png" "$title" "$subtitle" "$bg" "$fg" 1290 2796
+          done
+          ls -l "$out"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: store-screenshots
+          path: ${{ runner.temp }}/store-screenshots
+          if-no-files-found: error
+          retention-days: 30
+
+  upload:
+    needs: [shoot]
+    if: inputs.upload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: store-screenshots
+          path: ${{ runner.temp }}/store-screenshots
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_P8: ${{ secrets.ASC_P8 }}
+          LOCALE: ${{ inputs.locale }}
+        run: |
+          set -euo pipefail
+          keydir="$RUNNER_TEMP/private_keys"; mkdir -p "$keydir"; chmod 700 "$keydir"
+          ( umask 077; printf '%s\n' "$ASC_P8" > "$keydir/AuthKey_${ASC_KEY_ID}.p8" )
+          export ASC_KEY_PATH="$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          bundle=$(bash .daily-actions/asc/bundle-id.sh project.yml)
+          python3 .daily-actions/asc/store.py screenshots --bundle-id "$bundle" --dir "$RUNNER_TEMP/store-screenshots" \
+            --display-type APP_IPHONE_67 --locale "$LOCALE"
+      - name: Remove key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"
