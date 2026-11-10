@@ -75,6 +75,39 @@ class SubmitTests(unittest.TestCase):
         self.assertIn("審査に提出した", report)
         self.assertTrue(any("API では出せない" in r for r in report))
 
+    def test_purchases_still_attached_after_a_withdrawal_are_skipped(self):
+        path = products_file([PRO])
+        try:
+            api = FakeApi(self.routes())
+
+            def opener(req, timeout=0):
+                if req.get_method() == "POST" and req.full_url.endswith("/v1/inAppPurchaseSubmissions"):
+                    body = b'{"errors":[{"code":"ENTITY_ERROR.RELATIONSHIP.INVALID","detail":"InAppPurchase 1 has no pending version for submission"}]}'
+                    raise urllib.error.HTTPError(req.full_url, 409, "err", {}, io.BytesIO(body))
+                return api(req, timeout)
+            report = store.submit(asc.Client(lambda: "t", opener=opener),
+                                  Args(bundle_id="com.x.006", confirm_version="1.0.0", products=path))
+        finally:
+            os.unlink(path)
+        self.assertIn("審査に提出した", report)
+        self.assertTrue(any("API では出せない" in r for r in report))
+
+    def test_other_purchase_errors_still_stop(self):
+        path = products_file([PRO])
+        try:
+            api = FakeApi(self.routes())
+
+            def opener(req, timeout=0):
+                if req.get_method() == "POST" and req.full_url.endswith("/v1/inAppPurchaseSubmissions"):
+                    body = b'{"errors":[{"code":"ENTITY_ERROR.ATTRIBUTE.INVALID","detail":"bad"}]}'
+                    raise urllib.error.HTTPError(req.full_url, 409, "err", {}, io.BytesIO(body))
+                return api(req, timeout)
+            with self.assertRaises(asc.AscError):
+                store.submit(asc.Client(lambda: "t", opener=opener),
+                             Args(bundle_id="com.x.006", confirm_version="1.0.0", products=path))
+        finally:
+            os.unlink(path)
+
     def test_refuses_a_different_version(self):
         api = FakeApi(self.routes())
         with self.assertRaises(asc.AscError) as ctx:

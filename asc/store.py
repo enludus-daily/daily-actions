@@ -12,6 +12,7 @@
 
 提出の前に本人がすること（API がないもの）: App プライバシーの申告・年齢区分・審査用の連絡先。
 初めての App 内課金は、バージョンのページの「App 内課金とサブスクリプション」で本人が付ける（API で出そうとすると STATE_ERROR になるので、そのときは飛ばしてバージョンを出す）。
+取り下げて出し直すときも、バージョンに付いたままの App 内課金は API では出せない（has no pending version）。これも飛ばしてバージョンといっしょに見てもらう。
 足りないときは Apple のエラーをそのまま出して止まる（推測で埋めない）。
 """
 import argparse
@@ -24,6 +25,8 @@ from asc import AscError, q  # noqa: E402
 import iap  # noqa: E402
 
 SUBMITTABLE_REVIEW_STATES = {"READY_FOR_REVIEW", "UNRESOLVED_ISSUES"}
+# API では App 内課金だけを出せない（バージョンに付いていて、バージョンといっしょに審査される）ときのエラー
+IAP_GOES_WITH_VERSION_ERRORS = ("STATE_ERROR", "has no pending version")
 WITHDRAWABLE_REVIEW_STATES = {"WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"}
 DISPLAY_TYPES = {"APP_IPHONE_67", "APP_IPHONE_65", "APP_IPHONE_61", "APP_IPHONE_55"}
 
@@ -57,9 +60,9 @@ def submit_in_app_purchases(client, app_id: str, products_path: str, bundle_id: 
                 report.append(f"{p['productId']}：審査に出した（アプリのバージョンといっしょに見てもらう）")
             except AscError as e:
                 # 初めての App 内課金は API では出せない（バージョンのページで本人が付け、バージョンといっしょに審査される）
-                if "STATE_ERROR" not in str(e):
+                if not any(k in str(e) for k in IAP_GOES_WITH_VERSION_ERRORS):
                     raise
-                report.append(f"{p['productId']}：API では出せない状態（初めての App 内課金は、バージョンのページで付けたものがいっしょに審査される）")
+                report.append(f"{p['productId']}：API では出せない状態（バージョンのページで付いているものが、バージョンといっしょに審査される）")
         elif state in ("MISSING_METADATA", "DEVELOPER_ACTION_NEEDED", "REJECTED"):
             raise AscError(f"{p['productId']} は {state}。表示名・価格・審査用の画像を確かめる（products を実行し直す）")
         else:
