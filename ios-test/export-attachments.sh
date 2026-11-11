@@ -16,7 +16,7 @@ jq -r '.[] | .attachments[]? | [.exportedFileName, .suggestedHumanReadableName] 
     cp "$raw/$file" "$out/$safe.${file##*.}"
   done
 rm -rf "$raw"
-ls -l "$out" | head -80
+find "$out" -type f | sort | head -80
 echo "--- テストの結果の要約（失敗）"
 xcrun xcresulttool get test-results summary --path "$res" --compact 2>/dev/null |
   jq -r '.testFailures[]? | "\(.targetName) / \(.testName): \(.failureText)"' | head -40 || true
