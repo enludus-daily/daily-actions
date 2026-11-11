@@ -1,0 +1,70 @@
+# 診断（一時的。main には入れない）：iPhone Duo の内側の画面（display3）がまっ黒になる原因を調べる。
+# テンプレートのアプリ（公開リポジトリを読むだけ）を入れ、いくつかのやり方で全部の画面を撮る。
+name: diag-duo
+on:
+  push:
+    branches: ['diag/**']
+permissions:
+  contents: read
+jobs:
+  duo:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-app-template
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/setup-ios
+        with:
+          xcode-version: "27.1"
+      - name: Diagnose
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/diag"; mkdir -p "$out"
+          xcodebuild build -scheme DailyApp -destination "platform=iOS Simulator,name=iPhone Duo,OS=27.1" \
+            -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -quiet
+          app=$(find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' | head -1)
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          udid=$(xcrun simctl list devices available -j | jq -r '[.devices[][] | select(.name == "iPhone Duo")][-1].udid')
+          echo "udid=$udid bundle=$bundle_id"
+          echo "--- devicetypes"; xcrun simctl list devicetypes | grep -i -E 'duo|fold' || true
+          echo "--- help ui"; xcrun simctl help ui 2>&1 || true
+          echo "--- help io"; xcrun simctl help io 2>&1 || true
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          echo "--- enumerate (booted)"; xcrun simctl io "$udid" enumerate 2>&1 || true
+          xcrun simctl install "$udid" "$app"
+          shoot() {
+            local tag="$1" err ids
+            err=$(xcrun simctl io "$udid" screenshot "$out/$tag.png" 2>&1) && return 0
+            echo "$err" | sed -n '1,20p'
+            ids=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+).*/\1/p')
+            for id in $ids; do xcrun simctl io "$udid" screenshot --display="$id" "$out/$tag-display$id.png" 2>&1 | tail -1; done
+          }
+          xcrun simctl launch "$udid" "$bundle_id"; sleep 10
+          echo "=== A: headless, no posture"; shoot A-headless
+          for p in open opened unfolded flat; do
+            echo "=== posture $p"; xcrun simctl ui "$udid" posture "$p" 2>&1 && { sleep 5; shoot "B-posture-$p"; break; }
+          done
+          echo "--- enumerate (after posture)"; xcrun simctl io "$udid" enumerate 2>&1 || true
+          echo "=== C: Simulator.app open"
+          open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+          sleep 25
+          xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+          xcrun simctl launch "$udid" "$bundle_id"; sleep 10
+          shoot C-simulator-app
+          echo "--- enumerate (Simulator.app)"; xcrun simctl io "$udid" enumerate 2>&1 || true
+          echo "=== D: Settings app"; xcrun simctl launch "$udid" com.apple.Preferences; sleep 8; shoot D-settings
+          ls -l "$out"; shasum "$out"/*.png || true
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: diag-duo
+          path: ${{ runner.temp }}/diag
+          retention-days: 3
