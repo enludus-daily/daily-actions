@@ -232,13 +232,25 @@ jobs:
           xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
           out="$RUNNER_TEMP/demo"
           mkdir -p "$out"
-          # 画面が複数ある端末（iPhone Duo）は --display が要る。スクリーンショットのエラーに並ぶ最初の primary の画面を使う
+          # 画面が複数ある端末（iPhone Duo）は --display が要る。閉じた姿勢では「primary」の内側の画面は真っ白で、
+          # アプリは外側の画面に出る（2026-11-11 のタマヘビの CI で確認）。アプリを開いてから各画面を撮り、
+          # いちばん中身の多い（PNG が大きい）画面を録る
+          xcrun simctl launch "$udid" "$bundle_id" ${lang[@]+"${lang[@]}"}
+          sleep 6
           display=()
           if ! err=$(xcrun simctl io "$udid" screenshot "$out/probe.png" 2>&1); then
-            id=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*primary.*/\1/p' | head -1)
-            [ -n "$id" ] && display=(--display="$id")
+            best=""; bestsize=0
+            for id in $(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]].*/\1/p'); do
+              xcrun simctl io "$udid" screenshot --display="$id" "$out/probe-$id.png" >/dev/null 2>&1 || continue
+              size=$(stat -f %z "$out/probe-$id.png")
+              echo "display $id: $size bytes"
+              if [ "$size" -gt "$bestsize" ]; then best=$id; bestsize=$size; fi
+            done
+            [ -n "$best" ] && display=(--display="$best") && echo "recording display $best"
           fi
-          rm -f "$out/probe.png"
+          rm -f "$out"/probe*.png
+          xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+          sleep 1
           xcrun simctl io "$udid" recordVideo --codec=h264 --force ${display[@]+"${display[@]}"} "$out/demo-$DEMO_LANG.mp4" &
           rec=$!
           sleep 2
@@ -247,7 +259,9 @@ jobs:
           kill -INT "$rec"
           wait "$rec" || true
           ls -l "$out"
-          [ -s "$out/demo-$DEMO_LANG.mp4" ] || echo "::warning::デモを録画できませんでした"
+          size=$(stat -f %z "$out/demo-$DEMO_LANG.mp4" 2>/dev/null || echo 0)
+          # 1 秒でも映っていれば 100KB を超える。小さいのは真っ白な画面を録ったとき
+          [ "$size" -gt 100000 ] || echo "::warning::デモを録画できませんでした（$size bytes）"
       - name: Upload demo video
         if: always() && inputs.demo-video != ''
         uses: actions/upload-artifact@v5
