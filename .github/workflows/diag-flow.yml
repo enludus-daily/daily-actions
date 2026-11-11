@@ -23,6 +23,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: enludus-daily/daily-app-template
+          ref: d11eec9df5bdd2be297875a657099cab45ab49d6
           persist-credentials: false
       - uses: actions/checkout@v5
         with:

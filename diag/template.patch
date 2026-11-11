@@ -1,13 +1,16 @@
 diff --git a/.claude/skills/app-quality-bar/references/review.md b/.claude/skills/app-quality-bar/references/review.md
-index 0c54ca5..8e178ae 100644
+index 06e971c..97893b2 100644
 --- a/.claude/skills/app-quality-bar/references/review.md
 +++ b/.claude/skills/app-quality-bar/references/review.md
-@@ -36,4 +36,7 @@
+@@ -36,7 +36,10 @@
  Duo の外側の画面のスクショで、右上に黒い丸が出たら**アプリ側の原因**。シミュレータのカメラの切り欠きではない。2 本で確かめた原因：ページ送りの `TabView(.page)`（段取りラン）、`repeatForever` の動き（じぶん実験室：束の呼吸・箔のきらめき・無限めくり）。自前のページ送り・1 回だけの動きに変えると消える。出たら直してから採点する。
  
  ## 機械の検査を先に通す（2026-11-09）
 -自己申告の「黒い丸はなし」が 2 回はずれた（じぶん実験室・うでたてビート）。採点の前に、CI の screenshots を展開したフォルダで `python3 scripts/shot-check.py <フォルダ>` を実行し、出力を今日の Issue に貼る。display3 のまっ黒（Duo の内側。CI の撮り方の問題）以外が 1 件でも出たら、直してから採点する。
 +自己申告の「黒い丸はなし」が 2 回はずれた（じぶん実験室・うでたてビート）。採点の前に、CI の screenshots を展開したフォルダで `python3 scripts/shot-check.py <フォルダ>` を実行し、出力を今日の Issue に貼る。1 件でも出たら、直してから採点する。（Duo の内側の画面＝display3 は、CI のシミュレータでは閉じた状態のため描かれない。2026-11-11 から CI はまっ黒な内側の画像を残さず、`README-dark-displays.txt` で知らせる）
+ 
+ ## 英語（本人の希望 2026-11-10・11。必ず）
+ 採点の前に、英語の画面（起動引数 `-AppleLanguages (en) -AppleLocale en_US`）を主な画面ぶん撮って見る。日本語が残る・英語で並びが崩れる・アプリ名や許可の説明が日本語のまま、のどれかがあれば「仕上げ」は 1 点以下。`docs/app-store.json` の `en-US` が空なら「課金」と同じく 1 点以下。
 +
 +## 主なボタンが画面の中にあるか（2026-11-11）
 +静止画だけでは、主なボタンが画面の下で切れていても気づけなかった（こそうじ暦の「済んだ」、じぶん実験室の「くじを引く」）。主なボタンに `accessibilityIdentifier("main.…")` を付け、`UITests/MainFlowUITests.swift` の `MainFlow.steps` に主な流れを書く。CI の `testMainButtonsAreOnScreenAndHittable` が失敗したら、直してから採点する。採点では `screenshots` に加えて artifact `flow-screenshots`（Duo と普通の iPhone で、1 操作ごと・全部の画面）も見る。
@@ -222,7 +225,7 @@ index 9e75b88..b4bf1dc 100644
          - DailyAppTests
 +        - DailyAppUITests
 diff --git a/scripts/new-app.sh b/scripts/new-app.sh
-index 237b832..0b5e71b 100755
+index b8c48cd..535345b 100755
 --- a/scripts/new-app.sh
 +++ b/scripts/new-app.sh
 @@ -28,7 +28,7 @@ bundle="com.enludus.daily.$slot"
