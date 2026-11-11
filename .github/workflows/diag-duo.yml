@@ -25,7 +25,7 @@ jobs:
       - name: Diagnose
         continue-on-error: true
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           out="$RUNNER_TEMP/diag"; mkdir -p "$out"
           xcodebuild build -scheme DailyApp -destination "platform=iOS Simulator,name=iPhone Duo,OS=27.1" \
             -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO -quiet
@@ -52,7 +52,7 @@ jobs:
           two() { local tag="$1"; for id in 1 3; do xcrun simctl io "$udid" screenshot --display="$id" "$out/$tag-display$id.png" 2>&1 | tail -1; done; }
           echo "=== B: mask ignored"; xcrun simctl io "$udid" screenshot --display=3 --mask=ignored "$out/B-mask-ignored-display3.png" 2>&1 | tail -1
           echo "=== C: display 3 power on (explicit)"; xcrun simctl io "$udid" screenConfig --display=3 power on 2>&1; sleep 5; two C-d3-on
-          echo "=== D: display 1 power off（開いた状態のつもり）"; xcrun simctl io "$udid" screenConfig --display=1 power off 2>&1; sleep 8; two D-d1-off
+          echo "=== D: display 1 power off（開いた状態のつもり）"; xcrun simctl io "$udid" screenConfig --display=1 power off 2>&1; echo "exit=$?"; sleep 15; two D-d1-off
           xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
           xcrun simctl launch "$udid" "$bundle_id"; sleep 10; two D2-d1-off-relaunch
           echo "--- enumerate (d1 off)"; xcrun simctl io "$udid" enumerate 2>&1 | grep -E 'Power state|Default width|Screen ID|Device Name' || true
