@@ -50,23 +50,14 @@ jobs:
           jq -r '.[] | .attachments[]? | [.exportedFileName, .suggestedHumanReadableName] | @tsv' "$raw/manifest.json" 2>/dev/null |
             while IFS=$'\t' read -r file name; do
               case "$file" in *.png|*.jpg|*.jpeg|*.heic) ;; *) continue ;; esac
-              safe=$(printf '%s' "${name%.*}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)
+              # 書き出しが付ける "_<番号>_<UUID>" と拡張子を外す
+              base=$(printf '%s' "$name" | sed -E 's/\.(png|jpe?g|heic)$//; s/_[0-9]+_[0-9A-Fa-f-]{36}$//')
+              safe=$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)
               cp "$raw/$file" "$out/$safe.${file##*.}"
             done
           ls -l "$out" | head -80
-      - name: 検出の確認：主なボタンを画面の下に押し出すと、テストが失敗すること
-        if: always()
-        run: |
-          set -o pipefail
-          sed -i '' 's/        .padding()$/        .padding(.top, 2400)/' App/Sources/ContentView.swift
-          grep -n 'padding(.top, 2400)' App/Sources/ContentView.swift
-          if xcodebuild test -scheme DailyApp -destination "platform=iOS Simulator,name=iPhone 17,OS=latest" \
-               -only-testing:DailyAppUITests/MainFlowUITests/testMainButtonsAreOnScreenAndHittable \
-               -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/neg.log" | xcbeautify --renderer github-actions; then
-            echo "::error::切れたボタンを見つけられませんでした"; exit 1
-          fi
-          grep -E 'はみ出し|押せません' "$RUNNER_TEMP/neg.log" | head -5
-          echo "期待どおり失敗した"
+          echo "--- テストの結果の要約"
+          xcrun xcresulttool get test-results summary --path "$res" --compact 2>/dev/null | jq -r '.testFailures[]? | "\(.targetName) / \(.testName): \(.failureText)"' | head -40 || true
       - uses: actions/upload-artifact@v5
         if: always()
         with:

@@ -27,7 +27,7 @@ index 260e855..569c1ec 100644
      }
 diff --git a/UITests/MainFlowUITests.swift b/UITests/MainFlowUITests.swift
 new file mode 100644
-index 0000000..ad576df
+index 0000000..5734404
 --- /dev/null
 +++ b/UITests/MainFlowUITests.swift
 @@ -0,0 +1,120 @@
@@ -60,9 +60,9 @@ index 0000000..ad576df
 +
 +    var label: String {
 +        switch self {
-+        case .tap(let id): "tap-\(id)"
++        case .tap(let id): "tap-" + id.replacingOccurrences(of: ".", with: "_")
 +        case .swipeUp: "swipe-up"
-+        case .wait(let s): "wait-\(s)"
++        case .wait(let s): "wait-\(Int(s * 1000))ms"
 +        }
 +    }
 +}
