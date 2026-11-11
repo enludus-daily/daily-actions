@@ -138,6 +138,20 @@ jobs:
           EXTRA_DESTINATION: ${{ inputs.extra-test-destination }}
         run: |
           set -o pipefail
+          # テストの前にシミュレータを起動しきっておく（2 台目の初回起動が遅く、UI テストの実行役が起動の途中で止まることがある。2026-11-11）
+          preboot() {
+            local name os key udid
+            name=$(printf '%s' "$1" | sed -nE 's/.*name=([^,]+).*/\1/p'); os=$(printf '%s' "$1" | sed -nE 's/.*OS=([^,]+).*/\1/p')
+            [ -n "$name" ] || return 0
+            if [ -z "$os" ] || [ "$os" = latest ]; then key='[.devices | to_entries[] | select(.key | test("iOS")) | .key] | sort_by(split("-")[-2:] | map(tonumber)) | last'
+            else key="\"com.apple.CoreSimulator.SimRuntime.iOS-${os//./-}\""; fi
+            udid=$(xcrun simctl list devices available -j | jq -r --arg n "$name" ".devices[$key][]? | select(.name == \$n) | .udid" | head -1)
+            [ -n "$udid" ] || { echo "::warning::起動しておくシミュレータが見つかりません: $1"; return 0; }
+            xcrun simctl boot "$udid" 2>/dev/null || true
+            xcrun simctl bootstatus "$udid" -b >/dev/null && echo "起動済み: $name ($os) $udid"
+          }
+          preboot "$DESTINATION" || true
+          [ -n "$EXTRA_DESTINATION" ] && { preboot "$EXTRA_DESTINATION" || true; }
           dest=(-destination "$DESTINATION")
           # 2 台目は順に走らせる（同時に走らせると、シミュレータの接続切れで UI テストが落ちることがある。2026-11-11）
           [ -n "$EXTRA_DESTINATION" ] && dest+=(-destination "$EXTRA_DESTINATION" -disable-concurrent-destination-testing)

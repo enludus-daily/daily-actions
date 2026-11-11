@@ -3,7 +3,7 @@
 name: diag-flow
 on:
   push:
-    branches: ['diag/flow']
+    branches: ['diag/flow', 'diag/flow-*']
 permissions:
   contents: read
 jobs:
