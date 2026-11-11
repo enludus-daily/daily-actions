@@ -25,6 +25,12 @@ on:
       test-destination:
         type: string
         default: "platform=iOS Simulator,name=iPhone 17,OS=latest"
+      extra-test-destination:
+        description: |
+          テストをもう 1 台でも走らせる（例 iPhone Duo と普通の iPhone の両方）。空なら test-destination だけ。
+          UI テストの添付の画像（1 操作ごとの撮影）は artifact flow-screenshots に置く
+        type: string
+        default: ""
       screenshot-device:
         description: スクリーンショットを撮るシミュレータ（6.9 インチ = App Store の必須サイズ）
         type: string
@@ -36,7 +42,7 @@ on:
         type: string
         default: launch
       screenshot-posture:
-        description: 画面が複数ある端末で、撮る前に設定する姿勢（例 open）。空なら何もしない
+        description: 使えない（Xcode 27.1 のシミュレータに開け閉めの操作がない。2026-11-11 確認）。互換のために残し、値があれば警告だけ出す
         type: string
         default: ""
       demo-video:
@@ -129,15 +135,47 @@ jobs:
         env:
           SCHEME: ${{ inputs.scheme }}
           DESTINATION: ${{ inputs.test-destination }}
+          EXTRA_DESTINATION: ${{ inputs.extra-test-destination }}
         run: |
           set -o pipefail
+          dest=(-destination "$DESTINATION")
+          [ -n "$EXTRA_DESTINATION" ] && dest+=(-destination "$EXTRA_DESTINATION")
           xcodebuild test \
             -scheme "$SCHEME" \
-            -destination "$DESTINATION" \
+            "${dest[@]}" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             | xcbeautify --renderer github-actions
+      - name: Export UI test screenshots
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          res="$RUNNER_TEMP/TestResults.xcresult"; raw="$RUNNER_TEMP/flow-raw"; out="$RUNNER_TEMP/flow-screenshots"
+          [ -d "$res" ] || { echo "テストの結果がありません"; exit 0; }
+          mkdir -p "$raw" "$out"
+          xcrun xcresulttool export attachments --path "$res" --output-path "$raw" || exit 0
+          # manifest.json の名前（<端末>-<番号>-<操作>-screen<n>）に付け替える。失敗したテストの添付も残す
+          jq -r '.[] | .attachments[]? | [.exportedFileName, .suggestedHumanReadableName] | @tsv' "$raw/manifest.json" 2>/dev/null |
+            while IFS=$'\t' read -r file name; do
+              case "$file" in *.png|*.jpg|*.jpeg|*.heic) ;; *) continue ;; esac
+              # 書き出しが付ける "_<番号>_<UUID>" と拡張子を外す
+              base=$(printf '%s' "$name" | sed -E 's/\.(png|jpe?g|heic)$//; s/_[0-9]+_[0-9A-Fa-f-]{36}$//')
+              safe=$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)
+              cp "$raw/$file" "$out/$safe.${file##*.}"
+            done
+          ls -l "$out" | head -80
+          echo "--- テストの結果の要約"
+          xcrun xcresulttool get test-results summary --path "$res" --compact 2>/dev/null | jq -r '.testFailures[]? | "\(.targetName) / \(.testName): \(.failureText)"' | head -40 || true
+      - name: Upload UI test screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: flow-screenshots
+          path: ${{ runner.temp }}/flow-screenshots
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Screenshot (best effort)
         continue-on-error: true
         env:
@@ -157,25 +195,40 @@ jobs:
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 || true
           xcrun simctl install "$udid" "$app"
-          # 診断：画面が複数ある端末（iPhone Duo）の開け閉めの操作を探すため、simctl の ui / io の使い方を出す
-          { echo "--- simctl help io"; xcrun simctl help io; echo "--- simctl io enumerate"; xcrun simctl io "$udid" enumerate; } 2>&1 | sed -n '1,220p' || true
           if [ -n "${POSTURE:-}" ]; then
-            # 例: POSTURE="open"（simctl ui <udid> posture <値> がある Xcode でだけ効く）
-            xcrun simctl ui "$udid" posture "$POSTURE" || echo "::warning::posture $POSTURE を設定できませんでした"
-            sleep 3
+            # Xcode 27.1 の simctl・XCTest・Simulator には開け閉め（姿勢）の操作がない（2026-11-11 に CI で確認）。入力は互換のために残す
+            echo "::warning::screenshot-posture は使えません（シミュレータを開いた状態にする操作がない）。$POSTURE は無視します"
           fi
           out="$RUNNER_TEMP/screenshots"
           mkdir -p "$out"
           # iPhone Duo のように画面が複数ある端末では、--display を付けないと撮れない。
           # その場合は、エラーに並ぶ画面（例: "--display=3  LCD-1 (primary-1) 2007x2853"）を全部撮る。
+          # iPhone Duo のシミュレータは閉じた状態で起動し、内側の画面（LCD-1、display3）は何も描かれない（全画素が黒）。
+          # 開いた状態にする操作が simctl・XCTest・Simulator に無い（2026-11-11 確認）ので、まっ黒な画面は残さず知らせる。
+          is_black() {  # BMP の画素を間引いて調べ、RGB がすべて 0 なら 0 を返す
+            python3 -I - "$1" <<'PY'
+          import sys
+          d = open(sys.argv[1], 'rb').read()
+          off = int.from_bytes(d[10:14], 'little'); step = int.from_bytes(d[28:30], 'little') // 8
+          px = memoryview(d)[off:]
+          sys.exit(0 if all(px[i] == 0 and px[i + 1] == 0 and px[i + 2] == 0 for i in range(0, len(px) - step + 1, step * 97)) else 1)
+          PY
+          }
+          dark_displays=""
           shoot() {
-            local name="$1" err displays id size
+            local name="$1" err displays id size f
             if ! err=$(xcrun simctl io "$udid" screenshot "$out/$name.png" 2>&1); then
               displays=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*[[:space:]]([0-9]+x[0-9]+)$/\1 \2/p')
               if [ -z "$displays" ]; then printf '%s\n' "$err"; return 1; fi
               while read -r id size; do
-                xcrun simctl io "$udid" screenshot --display="$id" "$out/$name-display${id}-${size}.png"
+                f="$out/$name-display${id}-${size}.png"
+                xcrun simctl io "$udid" screenshot --display="$id" "$f"
+                if xcrun simctl io "$udid" screenshot --type=bmp --display="$id" "$RUNNER_TEMP/probe.bmp" >/dev/null 2>&1 &&
+                   is_black "$RUNNER_TEMP/probe.bmp"; then
+                  rm -f "$f"; case " $dark_displays " in *" $id "*) ;; *) dark_displays="$dark_displays $id" ;; esac
+                fi
               done <<< "$displays"
+              rm -f "$RUNNER_TEMP/probe.bmp"
             fi
           }
           n=0
@@ -202,6 +255,10 @@ jobs:
             sleep 8
             shoot "$(printf '%02d' "$n")-${scene/@/-}" || echo "::warning::$scene を撮れませんでした"
           done
+          if [ -n "$dark_displays" ]; then
+            msg="画面$dark_displays はまっ黒だったので残していません。iPhone Duo の内側の画面（display3）は、CI のシミュレータでは閉じた状態のため描かれません。内側の並べ方は size class（regular）で作り、Simulator.app か実機で確かめてください。"
+            echo "::notice::$msg"; printf '%s\n' "$msg" > "$out/README-dark-displays.txt"
+          fi
           ls -l "$out"
       - name: Demo video (best effort)
         if: inputs.demo-video != ''
@@ -232,10 +289,11 @@ jobs:
           xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
           out="$RUNNER_TEMP/demo"
           mkdir -p "$out"
-          # 画面が複数ある端末（iPhone Duo）は --display が要る。スクリーンショットのエラーに並ぶ最初の primary の画面を使う
+          # 画面が複数ある端末（iPhone Duo）は --display が要る。描かれている画面（名前が "(primary)" のもの）を使う。
+          # エラーには "(primary-1)"（Duo の内側。CI では描かれずまっ黒）が先に並ぶので、"primary" を含むだけで選ばない
           display=()
           if ! err=$(xcrun simctl io "$udid" screenshot "$out/probe.png" 2>&1); then
-            id=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*primary.*/\1/p' | head -1)
+            id=$(printf '%s\n' "$err" | sed -nE 's/^[[:space:]]*--display=([0-9]+)[[:space:]]+.*\(primary\).*/\1/p' | head -1)
             [ -n "$id" ] && display=(--display="$id")
           fi
           rm -f "$out/probe.png"

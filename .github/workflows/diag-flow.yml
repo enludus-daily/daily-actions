@@ -1,5 +1,5 @@
 # 診断（一時的。main には入れない）：テンプレートに UI テストの差分（diag/template.patch）を当て、
-# iPhone Duo と普通の iPhone の両方でテストし、ios-ci.yml と同じ手順で 1 操作ごとの画像を取り出す。
+# このブランチの ios-ci.yml の build-test の手順（テスト・UI テストの画像の取り出し・撮影・録画）をそのまま実行する。
 name: diag-flow
 on:
   push:
@@ -9,7 +9,16 @@ permissions:
 jobs:
   flow:
     runs-on: xcode-27
-    timeout-minutes: 50
+    timeout-minutes: 60
+    env:
+      SCHEME: DailyApp
+      DESTINATION: "platform=iOS Simulator,name=iPhone Duo,OS=27.1"
+      EXTRA_DESTINATION: "platform=iOS Simulator,name=iPhone 17,OS=latest"
+      DEVICE: iPhone Duo
+      SCENES: launch launch@en
+      POSTURE: ""
+      DEMO_LANG: en
+      DEMO_SECONDS: "22"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -24,43 +33,34 @@ jobs:
       - uses: ./.daily-actions/setup-ios
         with:
           xcode-version: "27.1"
-      - name: Simulators
-        run: xcrun simctl list devices available | grep -E 'iPhone|-- iOS' | head -30
-      - name: Build and test（ios-ci.yml と同じ）
-        env:
-          DESTINATION: "platform=iOS Simulator,name=iPhone Duo,OS=27.1"
-          EXTRA_DESTINATION: "platform=iOS Simulator,name=iPhone 17,OS=latest"
+      - name: Extract steps from ios-ci.yml
         run: |
-          set -o pipefail
-          dest=(-destination "$DESTINATION")
-          [ -n "$EXTRA_DESTINATION" ] && dest+=(-destination "$EXTRA_DESTINATION")
-          xcodebuild test -scheme DailyApp "${dest[@]}" \
-            -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
-            CODE_SIGNING_ALLOWED=NO | xcbeautify --renderer github-actions
-      - name: Export UI test screenshots（ios-ci.yml と同じ）
+          for step in "Build and test" "Export UI test screenshots" "Screenshot (best effort)" "Demo video (best effort)"; do
+            f="$RUNNER_TEMP/$(echo "$step" | tr -c 'A-Za-z' '_').sh"
+            ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["build-test"]["steps"].find { |s| s["name"] == ARGV[1] }["run"]' \
+              .daily-actions/.github/workflows/ios-ci.yml "$step" > "$f"
+            echo "== $step → $f ($(wc -l < "$f") 行)"
+          done
+      - name: Build and test
+        run: bash -e -o pipefail "$RUNNER_TEMP/Build_and_test_.sh"
+      - name: Export UI test screenshots
         if: always()
         continue-on-error: true
-        run: |
-          set -uo pipefail
-          res="$RUNNER_TEMP/TestResults.xcresult"; raw="$RUNNER_TEMP/flow-raw"; out="$RUNNER_TEMP/flow-screenshots"
-          [ -d "$res" ] || { echo "テストの結果がありません"; exit 0; }
-          mkdir -p "$raw" "$out"
-          xcrun xcresulttool export attachments --path "$res" --output-path "$raw" || exit 0
-          head -c 3000 "$raw/manifest.json"; echo
-          jq -r '.[] | .attachments[]? | [.exportedFileName, .suggestedHumanReadableName] | @tsv' "$raw/manifest.json" 2>/dev/null |
-            while IFS=$'\t' read -r file name; do
-              case "$file" in *.png|*.jpg|*.jpeg|*.heic) ;; *) continue ;; esac
-              # 書き出しが付ける "_<番号>_<UUID>" と拡張子を外す
-              base=$(printf '%s' "$name" | sed -E 's/\.(png|jpe?g|heic)$//; s/_[0-9]+_[0-9A-Fa-f-]{36}$//')
-              safe=$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)
-              cp "$raw/$file" "$out/$safe.${file##*.}"
-            done
-          ls -l "$out" | head -80
-          echo "--- テストの結果の要約"
-          xcrun xcresulttool get test-results summary --path "$res" --compact 2>/dev/null | jq -r '.testFailures[]? | "\(.targetName) / \(.testName): \(.failureText)"' | head -40 || true
+        run: bash -e "$RUNNER_TEMP/Export_UI_test_screenshots_.sh"
+      - name: Screenshot (best effort)
+        if: always()
+        continue-on-error: true
+        run: bash -e "$RUNNER_TEMP/Screenshot__best_effort__.sh"
+      - name: Demo video (best effort)
+        if: always()
+        continue-on-error: true
+        run: bash -e "$RUNNER_TEMP/Demo_video__best_effort__.sh"
       - uses: actions/upload-artifact@v5
         if: always()
         with:
-          name: flow-screenshots
-          path: ${{ runner.temp }}/flow-screenshots
+          name: diag-out
+          path: |
+            ${{ runner.temp }}/flow-screenshots
+            ${{ runner.temp }}/screenshots
+            ${{ runner.temp }}/demo
           retention-days: 3
