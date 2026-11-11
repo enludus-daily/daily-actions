@@ -29,7 +29,7 @@ jobs:
       - name: Build and test（ios-ci.yml と同じ）
         env:
           DESTINATION: "platform=iOS Simulator,name=iPhone Duo,OS=27.1"
-          EXTRA_DESTINATION: "platform=iOS Simulator,name=iPhone 17,OS=27.1"
+          EXTRA_DESTINATION: "platform=iOS Simulator,name=iPhone 17,OS=latest"
         run: |
           set -o pipefail
           dest=(-destination "$DESTINATION")
@@ -60,7 +60,7 @@ jobs:
           set -o pipefail
           sed -i '' 's/        .padding()$/        .padding(.top, 2400)/' App/Sources/ContentView.swift
           grep -n 'padding(.top, 2400)' App/Sources/ContentView.swift
-          if xcodebuild test -scheme DailyApp -destination "platform=iOS Simulator,name=iPhone 17,OS=27.1" \
+          if xcodebuild test -scheme DailyApp -destination "platform=iOS Simulator,name=iPhone 17,OS=latest" \
                -only-testing:DailyAppUITests/MainFlowUITests/testMainButtonsAreOnScreenAndHittable \
                -derivedDataPath "$RUNNER_TEMP/dd" CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/neg.log" | xcbeautify --renderer github-actions; then
             echo "::error::切れたボタンを見つけられませんでした"; exit 1
