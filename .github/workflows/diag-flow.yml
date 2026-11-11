@@ -1,0 +1,71 @@
+# 診断（一時的。main には入れない）：テンプレートに UI テストの差分（diag/template.patch）を当て、
+# ios-ci.yml の build-test（Duo）と test-extra（iPhone 17）と同じ手順を並行して実行する。
+name: diag-flow
+on:
+  push:
+    branches: ['diag/flow-3', 'diag/flow-4']
+permissions:
+  contents: read
+jobs:
+  flow:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dest: "platform=iOS Simulator,name=iPhone Duo,OS=27.1"
+            out: flow-screenshots
+            shots: true
+          - dest: "platform=iOS Simulator,name=iPhone 17,OS=latest"
+            out: flow-screenshots-extra
+            shots: false
+    runs-on: xcode-27
+    timeout-minutes: 40
+    env:
+      SCHEME: DailyApp
+      DEVICE: iPhone Duo
+      SCENES: launch launch@en
+      POSTURE: ""
+      DEMO_LANG: en
+      DEMO_SECONDS: "22"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-app-template
+          ref: d11eec9df5bdd2be297875a657099cab45ab49d6
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          path: .daily-actions
+          persist-credentials: false
+      - name: Apply template patch
+        run: git apply --whitespace=nowarn .daily-actions/diag/template.patch
+      - uses: ./.daily-actions/setup-ios
+        with:
+          xcode-version: "27.1"
+      - name: Build and test
+        env:
+          DESTINATION: ${{ matrix.dest }}
+          RESULT: ${{ runner.temp }}/TestResults.xcresult
+        run: bash .daily-actions/ios-test/run-tests.sh
+      - name: Export UI test screenshots
+        if: always()
+        run: bash .daily-actions/ios-test/export-attachments.sh "$RUNNER_TEMP/TestResults.xcresult" "$RUNNER_TEMP/${{ matrix.out }}"
+      - name: Screenshot and demo（ios-ci.yml の手順をそのまま）
+        if: always() && matrix.shots
+        continue-on-error: true
+        run: |
+          for step in "Screenshot (best effort)" "Demo video (best effort)"; do
+            ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["build-test"]["steps"].find { |s| s["name"] == ARGV[1] }["run"]' \
+              .daily-actions/.github/workflows/ios-ci.yml "$step" > "$RUNNER_TEMP/step.sh"
+            echo "== $step"; bash -e "$RUNNER_TEMP/step.sh" || echo "::warning::$step が失敗"
+          done
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: diag-${{ matrix.out }}
+          path: |
+            ${{ runner.temp }}/${{ matrix.out }}
+            ${{ runner.temp }}/screenshots
+            ${{ runner.temp }}/demo
+          if-no-files-found: ignore
+          retention-days: 3
