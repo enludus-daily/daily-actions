@@ -1,0 +1,211 @@
+diff --git a/.claude/skills/app-quality-bar/references/review.md b/.claude/skills/app-quality-bar/references/review.md
+index 0c54ca5..e0af416 100644
+--- a/.claude/skills/app-quality-bar/references/review.md
++++ b/.claude/skills/app-quality-bar/references/review.md
+@@ -37,3 +37,6 @@ Duo の外側の画面のスクショで、右上に黒い丸が出たら**ア
+ 
+ ## 機械の検査を先に通す（2026-11-09）
+ 自己申告の「黒い丸はなし」が 2 回はずれた（じぶん実験室・うでたてビート）。採点の前に、CI の screenshots を展開したフォルダで `python3 scripts/shot-check.py <フォルダ>` を実行し、出力を今日の Issue に貼る。display3 のまっ黒（Duo の内側。CI の撮り方の問題）以外が 1 件でも出たら、直してから採点する。
++
++## 主なボタンが画面の中にあるか（2026-11-11）
++静止画だけでは、主なボタンが画面の下で切れていても気づけなかった（こそうじ暦の「済んだ」、じぶん実験室の「くじを引く」）。主なボタンに `accessibilityIdentifier("main.…")` を付け、`UITests/MainFlowUITests.swift` の `MainFlow.steps` に主な流れを書く。CI の `testMainButtonsAreOnScreenAndHittable` が失敗したら、直してから採点する。採点では `screenshots` に加えて artifact `flow-screenshots`（Duo と普通の iPhone で、1 操作ごと・全部の画面）も見る。
+diff --git a/App/Sources/ContentView.swift b/App/Sources/ContentView.swift
+index 260e855..569c1ec 100644
+--- a/App/Sources/ContentView.swift
++++ b/App/Sources/ContentView.swift
+@@ -40,8 +40,11 @@ struct ContentView: View {
+         layout {
+             Button("リセット", role: .destructive) { apply { $0.reset() } }
+                 .buttonStyle(.bordered)
++                .accessibilityIdentifier("main.reset")
+             Button("1 たす") { apply { $0.increment() } }
+                 .buttonStyle(.borderedProminent)
++                // 主なボタンには "main." で始まる印を付ける（UI テストが画面の中にあり押せるかを確かめる）
++                .accessibilityIdentifier("main.increment")
+         }
+         .controlSize(.large)
+     }
+diff --git a/UITests/MainFlowUITests.swift b/UITests/MainFlowUITests.swift
+new file mode 100644
+index 0000000..ad576df
+--- /dev/null
++++ b/UITests/MainFlowUITests.swift
+@@ -0,0 +1,120 @@
++import XCTest
++
++// 主な流れを自動でタップし、1 操作ごとに全部の画面を撮る（CI の artifact `flow-screenshots`）。
++// あわせて、主なボタン（accessibilityIdentifier が "main." で始まるもの）が画面の中に収まり、押せることを確かめる。
++// その日のアプリでは MainFlow だけを書き換える（手順書「9.5 見直しのループ」）。
++
++/// その日のアプリの主な流れ。
++enum MainFlow {
++    /// 起動引数（見本のデータで開くなど。保存されたデータを壊さないもの）
++    static let launchArguments: [String] = []
++
++    /// 1 操作ずつ。各操作のあとに撮る。
++    static let steps: [Step] = [
++        .tap("main.increment"),
++        .tap("main.increment"),
++        .tap("main.reset"),
++    ]
++}
++
++enum Step {
++    /// accessibilityIdentifier で探してタップする（押す前に、画面の中にあり押せることを確かめる）
++    case tap(String)
++    /// 画面の上に向かってスワイプする（ページ送り・下の中身を出す）
++    case swipeUp
++    /// 待つ（秒）。動きの途中を撮るときに使う
++    case wait(Double)
++
++    var label: String {
++        switch self {
++        case .tap(let id): "tap-\(id)"
++        case .swipeUp: "swipe-up"
++        case .wait(let s): "wait-\(s)"
++        }
++    }
++}
++
++@MainActor
++final class MainFlowUITests: XCTestCase {
++    /// 起動直後と各操作のあとに、いま見えている "main." の部品がすべて画面の中にあり押せること
++    func testMainButtonsAreOnScreenAndHittable() throws {
++        continueAfterFailure = true
++        let app = launch()
++        let found = assertMainElementsOnScreen(app, when: "起動直後")
++        XCTAssertGreaterThan(found, 0, "主なボタンに accessibilityIdentifier(\"main.…\") を付けてください")
++        for (i, step) in MainFlow.steps.enumerated() {
++            perform(step, in: app)
++            assertMainElementsOnScreen(app, when: "\(i + 1) 番目の操作（\(step.label)）のあと")
++        }
++    }
++
++    /// 主な流れをたどり、1 操作ごとに撮る
++    func testWalkthroughScreenshots() throws {
++        continueAfterFailure = false
++        let app = launch()
++        shoot("00-launch")
++        for (i, step) in MainFlow.steps.enumerated() {
++            perform(step, in: app)
++            shoot(String(format: "%02d-%@", i + 1, step.label))
++        }
++    }
++
++    // MARK: -
++
++    private func launch() -> XCUIApplication {
++        let app = XCUIApplication()
++        app.launchArguments += MainFlow.launchArguments
++        app.launch()
++        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
++        return app
++    }
++
++    private func perform(_ step: Step, in app: XCUIApplication) {
++        switch step {
++        case .tap(let id):
++            let element = app.descendants(matching: .any).matching(identifier: id).firstMatch
++            XCTAssertTrue(element.waitForExistence(timeout: 10), "\(id) が見つかりません")
++            assertOnScreen(element, in: app, name: id)
++            element.tap()
++        case .swipeUp:
++            app.windows.firstMatch.swipeUp()
++        case .wait(let seconds):
++            _ = XCTWaiter.wait(for: [XCTestExpectation(description: "wait")], timeout: seconds)
++        }
++        // 動きが落ち着くのを少し待つ
++        _ = XCTWaiter.wait(for: [XCTestExpectation(description: "settle")], timeout: 1.0)
++    }
++
++    @discardableResult
++    private func assertMainElementsOnScreen(_ app: XCUIApplication, when: String) -> Int {
++        let query = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'main.'"))
++        let elements = query.allElementsBoundByIndex
++        for element in elements {
++            XCTContext.runActivity(named: "\(when)：\(element.identifier)") { _ in
++                assertOnScreen(element, in: app, name: element.identifier)
++            }
++        }
++        return elements.count
++    }
++
++    /// 画面（ウィンドウ）の中に全部が収まり、押せること。下で切れている・ほかの部品の下にあると失敗する
++    private func assertOnScreen(_ element: XCUIElement, in app: XCUIApplication, name: String) {
++        let window = app.windows.firstMatch.frame
++        let frame = element.frame
++        XCTAssertFalse(frame.isEmpty, "\(name) の大きさが 0 です")
++        XCTAssertTrue(window.insetBy(dx: -0.5, dy: -0.5).contains(frame),
++                      "\(name) が画面からはみ出しています（部品 \(frame)、画面 \(window)）。スクロールしないと押せない位置に主なボタンを置かない")
++        XCTAssertTrue(element.isHittable, "\(name) が押せません（隠れている・画面の外）")
++    }
++
++    /// 全部の画面（iPhone Duo では外側と内側）を撮って、結果に残す
++    private func shoot(_ name: String) {
++        let device = ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] ?? "device"
++        for (i, screen) in XCUIScreen.screens.enumerated() {
++            let shot = XCTAttachment(screenshot: screen.screenshot())
++            shot.name = "\(device)-\(name)-screen\(i)"
++            shot.lifetime = .keepAlways
++            add(shot)
++        }
++    }
++}
+diff --git a/docs/daily-runbook.md b/docs/daily-runbook.md
+index 104b72c..42a6581 100644
+--- a/docs/daily-runbook.md
++++ b/docs/daily-runbook.md
+@@ -84,6 +84,7 @@ dev-lifecycle の 1〜4 を **短く**（各数行）行い、今日の Issue 
+ 1. 主な画面をすべて撮る：アプリは起動引数 `-screenshotScene <名前>` で各画面を開けるようにし（UserDefaults の `screenshotScene` を読む）、`.github/workflows/ci.yml` の `screenshot-scenes` に並べる（例：`launch drill detail compose launch@dark`）。CI の artifact `screenshots` を開いて自分の目で見る。
+ 2. `.claude/skills/app-quality-bar/references/review.md` の 10 の観点（トーン・世界観・トークン・手応え・最初の 10 秒・毎日開く理由・状態・中身の量・課金・仕上げ）を 0〜3 で厳しく採点し、点数と理由と `scripts/tone-check.py` の結果を今日の Issue に書く。あわせて Duo の内側の画面も見る。**合計 22 以上・0 が1つもない・トーンと課金は 2 以上**まで、低い観点から直す。
+ 3. 大きい順に直し、テストを足し、CI → 撮り直し → 2 に戻る。
++- **主な流れの自動タップ（UI テスト。2026-11-11）**：主なボタンに `.accessibilityIdentifier("main.<名前>")` を付け、`UITests/MainFlowUITests.swift` の `MainFlow.steps` に主な流れ（`.tap("main.…")`・`.swipeUp`・`.wait(秒)`）を並べる。CI は iPhone Duo と普通の iPhone の両方で、(1) 起動直後と各操作のあとに `main.` の部品が画面の中に収まり押せるかを確かめ（下で切れていると失敗）、(2) 1 操作ごとに全部の画面を撮って artifact `flow-screenshots` に置く。主なボタンは、スクロールしないと見えない位置に置かない（`safeAreaInset(edge: .bottom)` などで画面の中に固定する）。
+ 4. 採点が基準に届き、「自分が利用者なら明日も開くか」に理由を付けて「はい」と言えるまで回す。届かないまま止めるときは、点数と足りない所を報告に書き、`ready-for-review` にしない。
+ 周ごとに、書き出した弱い所と直したことを今日の Issue に短く残す。
+ 
+diff --git a/project.yml b/project.yml
+index 9e75b88..b4bf1dc 100644
+--- a/project.yml
++++ b/project.yml
+@@ -54,13 +54,28 @@ targets:
+       base:
+         PRODUCT_BUNDLE_IDENTIFIER: com.enludus.daily.template.tests
+         GENERATE_INFOPLIST_FILE: YES
++  # 主な流れのタップと撮影・主なボタンが画面の中にあるかの検査（UITests/MainFlowUITests.swift）
++  DailyAppUITests:
++    type: bundle.ui-testing
++    platform: iOS
++    sources:
++      - path: UITests
++    dependencies:
++      - target: DailyApp
++    settings:
++      base:
++        PRODUCT_BUNDLE_IDENTIFIER: com.enludus.daily.template.uitests
++        GENERATE_INFOPLIST_FILE: YES
++        TEST_TARGET_NAME: DailyApp
+ schemes:
+   DailyApp:
+     build:
+       targets:
+         DailyApp: all
+         DailyAppTests: [test]
++        DailyAppUITests: [test]
+     test:
+       gatherCoverageData: true
+       targets:
+         - DailyAppTests
++        - DailyAppUITests
+diff --git a/scripts/new-app.sh b/scripts/new-app.sh
+index 237b832..0b5e71b 100755
+--- a/scripts/new-app.sh
++++ b/scripts/new-app.sh
+@@ -28,7 +28,7 @@ bundle="com.enludus.daily.$slot"
+ # 表示名だけ先に置き換える（後の DailyApp の一括置換に巻き込まれないように）
+ sed -i.bak "s|CFBundleDisplayName: DailyApp|CFBundleDisplayName: \"$display\"|" project.yml
+ sed -i.bak "s|com\.enludus\.daily\.template|$bundle|g" project.yml docs/products.json
+-for f in project.yml App/Sources/*.swift Tests/*.swift .github/workflows/ci.yml .github/workflows/testflight.yml; do
++for f in project.yml App/Sources/*.swift Tests/*.swift UITests/*.swift .github/workflows/ci.yml .github/workflows/testflight.yml; do
+   sed -i.bak "s/DailyApp/$name/g" "$f"
+ done
+ find . -name '*.bak' -not -path './.git/*' -delete
