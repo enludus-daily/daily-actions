@@ -27,8 +27,9 @@ on:
         default: "platform=iOS Simulator,name=iPhone 17,OS=latest"
       extra-test-destination:
         description: |
-          テストをもう 1 台でも走らせる（例 iPhone Duo と普通の iPhone の両方）。空なら test-destination だけ。
-          UI テストの添付の画像（1 操作ごとの撮影）は artifact flow-screenshots に置く
+          テストをもう 1 台でも走らせる（例 iPhone Duo と普通の iPhone の両方）。別のジョブ test-extra で並行して走らせる。
+          空なら test-destination だけ。UI テストの添付の画像（1 操作ごとの撮影）は artifact flow-screenshots（1 台目）と
+          flow-screenshots-extra（2 台目）に置く
         type: string
         default: ""
       screenshot-device:
@@ -135,57 +136,11 @@ jobs:
         env:
           SCHEME: ${{ inputs.scheme }}
           DESTINATION: ${{ inputs.test-destination }}
-          EXTRA_DESTINATION: ${{ inputs.extra-test-destination }}
-        run: |
-          set -o pipefail
-          # テストの前にシミュレータを起動しきっておく（2 台目の初回起動が遅く、UI テストの実行役が起動の途中で止まることがある。2026-11-11）
-          preboot() {
-            local name os key udid
-            name=$(printf '%s' "$1" | sed -nE 's/.*name=([^,]+).*/\1/p'); os=$(printf '%s' "$1" | sed -nE 's/.*OS=([^,]+).*/\1/p')
-            [ -n "$name" ] || return 0
-            if [ -z "$os" ] || [ "$os" = latest ]; then key='[.devices | to_entries[] | select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+$")) | .key] | sort_by(split("-")[-2:] | map(tonumber)) | last'
-            else key="\"com.apple.CoreSimulator.SimRuntime.iOS-${os//./-}\""; fi
-            udid=$(xcrun simctl list devices available -j | jq -r --arg n "$name" ".devices[$key][]? | select(.name == \$n) | .udid" | head -1)
-            [ -n "$udid" ] || { echo "::warning::起動しておくシミュレータが見つかりません: $1"; return 0; }
-            xcrun simctl boot "$udid" 2>/dev/null || true
-            xcrun simctl bootstatus "$udid" -b >/dev/null && echo "起動済み: $name ($os) $udid"
-          }
-          preboot "$DESTINATION" || true
-          [ -n "$EXTRA_DESTINATION" ] && { preboot "$EXTRA_DESTINATION" || true; }
-          dest=(-destination "$DESTINATION")
-          # 2 台目は順に走らせる（同時に走らせると、シミュレータの接続切れで UI テストが落ちることがある。2026-11-11）
-          [ -n "$EXTRA_DESTINATION" ] && dest+=(-destination "$EXTRA_DESTINATION" -disable-concurrent-destination-testing)
-          # 失敗したテストは 1 回だけやり直す（XCTest の「background assertion」などシミュレータ側のまれな失敗のため。
-          # ボタンが画面の外にあるなどの本当の失敗は毎回起きるので、やり直しても見逃さない）
-          dest+=(-retry-tests-on-failure -test-iterations 2)
-          xcodebuild test \
-            -scheme "$SCHEME" \
-            "${dest[@]}" \
-            -derivedDataPath "$RUNNER_TEMP/dd" \
-            -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
-            CODE_SIGNING_ALLOWED=NO \
-            | xcbeautify --renderer github-actions
+          RESULT: ${{ runner.temp }}/TestResults.xcresult
+        run: bash .daily-actions/ios-test/run-tests.sh
       - name: Export UI test screenshots
         if: always()
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          res="$RUNNER_TEMP/TestResults.xcresult"; raw="$RUNNER_TEMP/flow-raw"; out="$RUNNER_TEMP/flow-screenshots"
-          [ -d "$res" ] || { echo "テストの結果がありません"; exit 0; }
-          mkdir -p "$raw" "$out"
-          xcrun xcresulttool export attachments --path "$res" --output-path "$raw" || exit 0
-          # manifest.json の名前（<端末>-<番号>-<操作>-screen<n>）に付け替える。失敗したテストの添付も残す
-          jq -r '.[] | .attachments[]? | [.exportedFileName, .suggestedHumanReadableName] | @tsv' "$raw/manifest.json" 2>/dev/null |
-            while IFS=$'\t' read -r file name; do
-              case "$file" in *.png|*.jpg|*.jpeg|*.heic) ;; *) continue ;; esac
-              # 書き出しが付ける "_<番号>_<UUID>" と拡張子を外す
-              base=$(printf '%s' "$name" | sed -E 's/\.(png|jpe?g|heic)$//; s/_[0-9]+_[0-9A-Fa-f-]{36}$//')
-              safe=$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)
-              cp "$raw/$file" "$out/$safe.${file##*.}"
-            done
-          ls -l "$out" | head -80
-          echo "--- テストの結果の要約"
-          xcrun xcresulttool get test-results summary --path "$res" --compact 2>/dev/null | jq -r '.testFailures[]? | "\(.targetName) / \(.testName): \(.failureText)"' | head -40 || true
+        run: bash .daily-actions/ios-test/export-attachments.sh "$RUNNER_TEMP/TestResults.xcresult" "$RUNNER_TEMP/flow-screenshots"
       - name: Upload UI test screenshots
         if: always()
         uses: actions/upload-artifact@v5
@@ -358,5 +313,50 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: TestResults.xcresult
+          path: ${{ runner.temp }}/TestResults.xcresult
+          retention-days: 7
+
+  # 2 台目（例 普通の iPhone）のテスト。build-test と並行して走らせ、build-test の時間を延ばさない
+  test-extra:
+    needs: [guard, scan]
+    if: inputs.extra-test-destination != ''
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout daily-actions (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: enludus-daily/daily-actions
+          ref: ${{ inputs.actions-sha }}
+          path: .daily-actions
+          persist-credentials: false
+      - uses: ./.daily-actions/setup-ios
+        with:
+          xcode-version: ${{ inputs.xcode-version }}
+      - name: Build and test
+        env:
+          SCHEME: ${{ inputs.scheme }}
+          DESTINATION: ${{ inputs.extra-test-destination }}
+          RESULT: ${{ runner.temp }}/TestResults.xcresult
+        run: bash .daily-actions/ios-test/run-tests.sh
+      - name: Export UI test screenshots
+        if: always()
+        run: bash .daily-actions/ios-test/export-attachments.sh "$RUNNER_TEMP/TestResults.xcresult" "$RUNNER_TEMP/flow-screenshots-extra"
+      - name: Upload UI test screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: flow-screenshots-extra
+          path: ${{ runner.temp }}/flow-screenshots-extra
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: TestResults-extra.xcresult
           path: ${{ runner.temp }}/TestResults.xcresult
           retention-days: 7

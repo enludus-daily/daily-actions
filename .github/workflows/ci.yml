@@ -27,7 +27,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/al.tgz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
       - name: shellcheck
-        run: shellcheck scan/scan-sensitive.sh guard/guard.sh asc/bundle-id.sh tests/*.sh .githooks/pre-push
+        run: shellcheck scan/scan-sensitive.sh guard/guard.sh asc/bundle-id.sh ios-test/*.sh tests/*.sh .githooks/pre-push
       - name: tests
         run: |
           bash tests/scan-test.sh
