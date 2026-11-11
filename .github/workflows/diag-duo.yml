@@ -49,18 +49,20 @@ jobs:
           }
           xcrun simctl launch "$udid" "$bundle_id"; sleep 10
           echo "=== A: headless, no posture"; shoot A-headless
-          for p in open opened unfolded flat; do
-            echo "=== posture $p"; xcrun simctl ui "$udid" posture "$p" 2>&1 && { sleep 5; shoot "B-posture-$p"; break; }
-          done
-          echo "--- enumerate (after posture)"; xcrun simctl io "$udid" enumerate 2>&1 || true
-          echo "=== C: Simulator.app open"
-          open -a Simulator --args -CurrentDeviceUDID "$udid" || true
-          sleep 25
+          two() { local tag="$1"; for id in 1 3; do xcrun simctl io "$udid" screenshot --display="$id" "$out/$tag-display$id.png" 2>&1 | tail -1; done; }
+          echo "=== B: mask ignored"; xcrun simctl io "$udid" screenshot --display=3 --mask=ignored "$out/B-mask-ignored-display3.png" 2>&1 | tail -1
+          echo "=== C: display 3 power on (explicit)"; xcrun simctl io "$udid" screenConfig --display=3 power on 2>&1; sleep 5; two C-d3-on
+          echo "=== D: display 1 power off（開いた状態のつもり）"; xcrun simctl io "$udid" screenConfig --display=1 power off 2>&1; sleep 8; two D-d1-off
           xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
-          xcrun simctl launch "$udid" "$bundle_id"; sleep 10
-          shoot C-simulator-app
-          echo "--- enumerate (Simulator.app)"; xcrun simctl io "$udid" enumerate 2>&1 || true
-          echo "=== D: Settings app"; xcrun simctl launch "$udid" com.apple.Preferences; sleep 8; shoot D-settings
+          xcrun simctl launch "$udid" "$bundle_id"; sleep 10; two D2-d1-off-relaunch
+          echo "--- enumerate (d1 off)"; xcrun simctl io "$udid" enumerate 2>&1 | grep -E 'Power state|Default width|Screen ID|Device Name' || true
+          echo "=== E: display 3 off → on（入れ直し）"; xcrun simctl io "$udid" screenConfig --display=3 power off 2>&1; sleep 3
+          xcrun simctl io "$udid" screenConfig --display=3 power on 2>&1; sleep 8; two E-d3-cycle
+          echo "=== F: display 1 power on again（閉じた状態に戻す）"; xcrun simctl io "$udid" screenConfig --display=1 power on 2>&1; sleep 8; two F-d1-on
+          echo "=== G: 起動前に display 1 を off にして boot しなおす"
+          xcrun simctl shutdown "$udid"; xcrun simctl boot "$udid"; xcrun simctl bootstatus "$udid" -b >/dev/null
+          xcrun simctl io "$udid" screenConfig --display=1 power off 2>&1; sleep 10
+          xcrun simctl launch "$udid" "$bundle_id"; sleep 10; two G-reboot-d1-off
           ls -l "$out"; shasum "$out"/*.png || true
       - uses: actions/upload-artifact@v5
         if: always()
