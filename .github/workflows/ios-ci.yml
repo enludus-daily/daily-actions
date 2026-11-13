@@ -49,7 +49,7 @@ on:
       demo-video:
         description: |
           デモの録画（YouTube の「AI が毎日アプリを作る」シリーズ用。2026-11-10 本人の許可で追加）。
-          en / ja で、その言語のアプリを起動引数 -demo で開き、screenshot-device で録画して artifact demo-video に置く。空なら録らない
+          en / ja（空白区切りで複数可。例 "en ja"）で、その言語のアプリを起動引数 -demo で開き、screenshot-device で録画して artifact demo-video に置く。空なら録らない
         type: string
         default: ""
       demo-seconds:
@@ -236,7 +236,7 @@ jobs:
       - name: Demo video (best effort)
         if: inputs.demo-video != ''
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 9
         env:
           SCHEME: ${{ inputs.scheme }}
           DEVICE: ${{ inputs.screenshot-device }}
@@ -244,7 +244,10 @@ jobs:
           DEMO_SECONDS: ${{ inputs.demo-seconds }}
         run: |
           set -euo pipefail
-          case "$DEMO_LANG" in en) lang=(-AppleLanguages "(en)" -AppleLocale en_US) ;; ja) lang=(-AppleLanguages "(ja)" -AppleLocale ja_JP) ;; *) echo "::warning::demo-video は en か ja: $DEMO_LANG"; exit 0 ;; esac
+          # 言語は空白区切りで複数（例 "en ja"）。言語ごとに demo-<言語>.mp4 を録る（2026-11-13 本人の許可：リリースの告知を日英で作るため）
+          langs_of() { case "$1" in en) lang=(-AppleLanguages "(en)" -AppleLocale en_US) ;; ja) lang=(-AppleLanguages "(ja)" -AppleLocale ja_JP) ;; *) return 1 ;; esac; }
+          first=${DEMO_LANG%% *}
+          langs_of "$first" || { echo "::warning::demo-video は en / ja（空白区切り）: $DEMO_LANG"; exit 0; }
           # 前の手順（Screenshot）でビルド・インストール済み。無ければここで作る
           app=$(find "$RUNNER_TEMP/dd-shot/Build/Products" -maxdepth 2 -name '*.app' -path '*iphonesimulator*' 2>/dev/null | head -1 || true)
           if [ -z "$app" ]; then
@@ -279,19 +282,22 @@ jobs:
             [ -n "$best" ] && display=(--display="$best") && echo "recording display $best"
           fi
           rm -f "$out"/probe*.png
-          xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
-          sleep 1
-          xcrun simctl io "$udid" recordVideo --codec=h264 --force ${display[@]+"${display[@]}"} "$out/demo-$DEMO_LANG.mp4" &
-          rec=$!
-          sleep 2
-          xcrun simctl launch "$udid" "$bundle_id" -demo ${lang[@]+"${lang[@]}"}
-          sleep "$DEMO_SECONDS"
-          kill -INT "$rec"
-          wait "$rec" || true
+          for l in $DEMO_LANG; do
+            langs_of "$l" || { echo "::warning::知らない言語: $l"; continue; }
+            xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+            sleep 1
+            xcrun simctl io "$udid" recordVideo --codec=h264 --force ${display[@]+"${display[@]}"} "$out/demo-$l.mp4" &
+            rec=$!
+            sleep 2
+            xcrun simctl launch "$udid" "$bundle_id" -demo ${lang[@]+"${lang[@]}"}
+            sleep "$DEMO_SECONDS"
+            kill -INT "$rec"
+            wait "$rec" || true
+            size=$(stat -f %z "$out/demo-$l.mp4" 2>/dev/null || echo 0)
+            # 1 秒でも映っていれば 100KB を超える。小さいのは真っ白な画面を録ったとき
+            [ "$size" -gt 100000 ] || echo "::warning::デモ（$l）を録画できませんでした（$size bytes）"
+          done
           ls -l "$out"
-          size=$(stat -f %z "$out/demo-$DEMO_LANG.mp4" 2>/dev/null || echo 0)
-          # 1 秒でも映っていれば 100KB を超える。小さいのは真っ白な画面を録ったとき
-          [ "$size" -gt 100000 ] || echo "::warning::デモを録画できませんでした（$size bytes）"
       - name: Upload demo video
         if: always() && inputs.demo-video != ''
         uses: actions/upload-artifact@v5
