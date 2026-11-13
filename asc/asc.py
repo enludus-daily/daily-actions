@@ -371,6 +371,8 @@ def metadata(client: Client, args) -> list[str]:
             "supportUrl": block.get("supportUrl") or meta.get("supportUrl"),
             "marketingUrl": block.get("marketingUrl") or meta.get("marketingUrl"),
             "promotionalText": block.get("promotionalText"),
+            # アップデートの「このバージョンの新機能」（はじめての版には入れられないので、書いたときだけ）
+            "whatsNew": block.get("whatsNew"),
         })
         vloc = find_localization(vlocs, loc_code)
         if vloc:
